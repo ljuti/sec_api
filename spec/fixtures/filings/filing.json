@@ -1,0 +1,116 @@
+{
+  "id": "9bb018bb35b26df92204a0afba52c30a",
+  "accessionNo": "0001437749-20-002201",
+  "cik": "924383",
+  "ticker": "GNSS",
+  "companyName": "Genasys Inc.",
+  "companyNameLong": "Genasys Inc. (Filer)",
+  "formType": "10-Q",
+  "periodOfReport": "2019-12-31",
+  "description": "Form 10-Q - Quarterly report [Sections 13 or 15(d)]",
+  "filedAt": "2020-02-10T19:28:05-05:00",
+  "linkToTxt": "https://www.sec.gov/Archives/edgar/data/924383/0001437749-20-002201.txt",
+  "linkToHtml": "https://www.sec.gov/Archives/edgar/data/924383/0001437749-20-002201-index.htm",
+  "linkToFilingDetails": "https://www.sec.gov/Archives/edgar/data/924383/000143774920002201/lrad20191231_10q.htm",
+  "entities": [
+    {
+      "companyName": "Genasys Inc. (Filer)",
+      "cik": "0000924383",
+      "irsNo": "870361799",
+      "stateOfIncorporation": "DE",
+      "fiscalYearEnd": "0930",
+      "type": "10-Q",
+      "act": "34",
+      "fileNo": "000-24248",
+      "filmNo": "20593428",
+      "sic": "3651 Household Audio &amp; Video Equipment"
+    }
+  ],
+  "documentFormatFiles": [
+    {
+      "sequence": "1",
+      "description": "FORM 10-Q",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/924383/000143774920002201/lrad20191231_10q.htm",
+      "type": "10-Q",
+      "size": "938119"
+    },
+    {
+      "sequence": "2",
+      "description": "EXHIBIT 31.1",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/924383/000143774920002201/ex_171266.htm",
+      "type": "EX-31.1",
+      "size": "13563"
+    },
+    {
+      "sequence": "3",
+      "description": "EXHIBIT 31.2",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/924383/000143774920002201/ex_171267.htm",
+      "type": "EX-31.2",
+      "size": "13507"
+    },
+    {
+      "sequence": "4",
+      "description": "EXHIBIT 32.1",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/924383/000143774920002201/ex_171268.htm",
+      "type": "EX-32.1",
+      "size": "8102"
+    },
+    {
+      "sequence": "11",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/924383/000143774920002201/logo.jpg",
+      "type": "GRAPHIC",
+      "size": "5579"
+    },
+    {
+      "sequence": " ",
+      "description": "Complete submission text file",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/924383/000143774920002201/0001437749-20-002201.txt",
+      "type": " ",
+      "size": "6627216"
+    }
+  ],
+  "dataFiles": [
+    {
+      "sequence": "5",
+      "description": "XBRL INSTANCE DOCUMENT",
+      "documentUrl": "/Archives/edgar/data/924383/000143774920002201/lrad-20191231.xml",
+      "type": "EX-101.INS",
+      "size": "1561458"
+    },
+    {
+      "sequence": "6",
+      "description": "XBRL TAXONOMY EXTENSION SCHEMA",
+      "documentUrl": "/Archives/edgar/data/924383/000143774920002201/lrad-20191231.xsd",
+      "type": "EX-101.SCH",
+      "size": "70974"
+    },
+    {
+      "sequence": "7",
+      "description": "XBRL TAXONOMY EXTENSION CALCULATION LINKBASE",
+      "documentUrl": "/Archives/edgar/data/924383/000143774920002201/lrad-20191231_cal.xml",
+      "type": "EX-101.CAL",
+      "size": "49944"
+    },
+    {
+      "sequence": "8",
+      "description": "XBRL TAXONOMY EXTENSION DEFINITION LINKBASE",
+      "documentUrl": "/Archives/edgar/data/924383/000143774920002201/lrad-20191231_def.xml",
+      "type": "EX-101.DEF",
+      "size": "464656"
+    },
+    {
+      "sequence": "9",
+      "description": "XBRL TAXONOMY EXTENSION LABEL LINKBASE",
+      "documentUrl": "/Archives/edgar/data/924383/000143774920002201/lrad-20191231_lab.xml",
+      "type": "EX-101.LAB",
+      "size": "399474"
+    },
+    {
+      "sequence": "10",
+      "description": "XBRL TAXONOMY EXTENSION PRESENTATION LINKBASE",
+      "documentUrl": "/Archives/edgar/data/924383/000143774920002201/lrad-20191231_pre.xml",
+      "type": "EX-101.PRE",
+      "size": "505337"
+    }
+  ]
+}
