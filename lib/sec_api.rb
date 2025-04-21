@@ -16,6 +16,7 @@ require "sec_api/collections/filings"
 require "sec_api/collections/fulltext_results"
 require "sec_api/query"
 require "sec_api/extractor"
+require "sec_api/mapping"
 require "sec_api/config"
 require "sec_api/client"
 
