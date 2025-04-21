@@ -26,5 +26,9 @@ module SecApi
     def extractor
       @_extractor ||= Extractor.new(self)
     end
+
+    def mapping
+      @_mapping ||= Mapping.new(self)
+    end
   end
 end
