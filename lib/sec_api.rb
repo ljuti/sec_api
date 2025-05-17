@@ -19,6 +19,7 @@ require "sec_api/extractor"
 require "sec_api/mapping"
 require "sec_api/config"
 require "sec_api/client"
+require "sec_api/xbrl"
 
 module SecApi
   class Error < StandardError; end

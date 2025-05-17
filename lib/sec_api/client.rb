@@ -1,3 +1,5 @@
+require "faraday"
+
 module SecApi
   class Client
     def initialize(config = Config.new)

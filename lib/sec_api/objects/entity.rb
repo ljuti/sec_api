@@ -12,7 +12,7 @@ module SecApi
       attribute? :state_of_incorporation, Types::String
       attribute? :fiscal_year_end, Types::String
       attribute :type, Types::String
-      attribute :act, Types::String
+      attribute? :act, Types::String
       attribute :file_number, Types::String
       attribute :film_number, Types::String
       attribute :sic, Types::String
