@@ -7,6 +7,8 @@ module Types
   include Dry.Types()
 end
 
+require "sec_api/errors/error"
+require "sec_api/errors/configuration_error"
 require "sec_api/objects/document_format_file"
 require "sec_api/objects/data_file"
 require "sec_api/objects/entity"
@@ -22,6 +24,5 @@ require "sec_api/client"
 require "sec_api/xbrl"
 
 module SecApi
-  class Error < StandardError; end
   # Your code goes here...
 end

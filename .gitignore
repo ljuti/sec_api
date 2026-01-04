@@ -9,4 +9,11 @@
 
 # rspec failure tracking
 .rspec_status
+
+# Configuration files with credentials (use .example files as templates)
+/config/secapi.yml
 /config/secapi.local.yml
+_bmad/
+_bmad-output/
+.claude/
+.node-version

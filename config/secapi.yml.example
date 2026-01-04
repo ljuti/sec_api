@@ -1,0 +1,57 @@
+# SecAPI Configuration Example
+# Copy this file to config/secapi.yml or config/secapi.local.yml
+# and configure your API credentials
+
+# REQUIRED: Your SEC API key
+# Get your API key from https://sec-api.io
+# Can also be set via SECAPI_API_KEY environment variable
+api_key: <%= ENV.fetch('SECAPI_API_KEY', 'your_api_key_here') %>
+
+# OPTIONAL: Base URL for SEC API endpoints
+# Default: https://api.sec-api.io
+# Override for testing environments or sandbox APIs
+# Can also be set via SECAPI_BASE_URL environment variable
+# base_url: https://api.sec-api.io
+
+# OPTIONAL: Retry Configuration
+# Maximum number of retry attempts for failed requests
+# Default: 5
+# retry_max_attempts: 5
+
+# Initial delay in seconds before first retry
+# Default: 1.0
+# retry_initial_delay: 1.0
+
+# Maximum delay in seconds between retries (exponential backoff cap)
+# Default: 60.0
+# retry_max_delay: 60.0
+
+# OPTIONAL: Timeout Configuration
+# Request timeout in seconds
+# Default: 30
+# request_timeout: 30
+
+# OPTIONAL: Rate Limiting Configuration
+# Threshold (0.0-1.0) for proactive throttling
+# Default: 0.1 (throttle when less than 10% quota remaining)
+# rate_limit_threshold: 0.1
+
+# PRODUCTION DEPLOYMENT EXAMPLE
+# Using environment variables (recommended for production):
+#
+# api_key: <%= ENV.fetch('SECAPI_API_KEY') %>
+# base_url: <%= ENV.fetch('SECAPI_BASE_URL', 'https://api.sec-api.io') %>
+# retry_max_attempts: <%= ENV.fetch('SECAPI_RETRY_MAX_ATTEMPTS', 5).to_i %>
+# request_timeout: <%= ENV.fetch('SECAPI_REQUEST_TIMEOUT', 30).to_i %>
+
+# TESTING ENVIRONMENT EXAMPLE
+# Override base_url to point to test server:
+#
+# base_url: https://test.sec-api.example.com
+# api_key: test_api_key_12345
+
+# LOCAL DEVELOPMENT
+# For local overrides without committing credentials:
+# 1. Copy this file to config/secapi.local.yml
+# 2. Add config/secapi.local.yml to .gitignore (already done)
+# 3. Configure your local API key in secapi.local.yml
