@@ -80,6 +80,7 @@ RSpec.describe SecApi::Config do
         retry_max_attempts: 10,
         retry_initial_delay: 2.0,
         retry_max_delay: 120.0,
+        retry_backoff_factor: 3,
         request_timeout: 60,
         rate_limit_threshold: 0.2
       )
@@ -89,6 +90,7 @@ RSpec.describe SecApi::Config do
       expect(config.retry_max_attempts).to eq(10)
       expect(config.retry_initial_delay).to eq(2.0)
       expect(config.retry_max_delay).to eq(120.0)
+      expect(config.retry_backoff_factor).to eq(3)
       expect(config.request_timeout).to eq(60)
       expect(config.rate_limit_threshold).to eq(0.2)
     end
@@ -111,6 +113,10 @@ RSpec.describe SecApi::Config do
 
     it "sets retry_max_delay to 60.0 seconds" do
       expect(config.retry_max_delay).to eq(60.0)
+    end
+
+    it "sets retry_backoff_factor to 2 (exponential)" do
+      expect(config.retry_backoff_factor).to eq(2)
     end
 
     it "sets request_timeout to 30 seconds" do
@@ -189,6 +195,89 @@ RSpec.describe SecApi::Config do
     context "when api_key is present and valid" do
       it "does not raise error" do
         config = SecApi::Config.new(api_key: "valid_test_key_123")
+        expect { config.validate! }.not_to raise_error
+      end
+    end
+
+    context "when retry configuration is invalid" do
+      it "raises ConfigurationError when retry_max_attempts is zero" do
+        config = SecApi::Config.new(api_key: "valid_test_key_123", retry_max_attempts: 0)
+        expect { config.validate! }.to raise_error(
+          SecApi::ConfigurationError,
+          /retry_max_attempts must be positive/
+        )
+      end
+
+      it "raises ConfigurationError when retry_max_attempts is negative" do
+        config = SecApi::Config.new(api_key: "valid_test_key_123", retry_max_attempts: -1)
+        expect { config.validate! }.to raise_error(
+          SecApi::ConfigurationError,
+          /retry_max_attempts must be positive/
+        )
+      end
+
+      it "raises ConfigurationError when retry_initial_delay is zero" do
+        config = SecApi::Config.new(api_key: "valid_test_key_123", retry_initial_delay: 0)
+        expect { config.validate! }.to raise_error(
+          SecApi::ConfigurationError,
+          /retry_initial_delay must be positive/
+        )
+      end
+
+      it "raises ConfigurationError when retry_initial_delay is negative" do
+        config = SecApi::Config.new(api_key: "valid_test_key_123", retry_initial_delay: -1.0)
+        expect { config.validate! }.to raise_error(
+          SecApi::ConfigurationError,
+          /retry_initial_delay must be positive/
+        )
+      end
+
+      it "raises ConfigurationError when retry_max_delay is zero" do
+        config = SecApi::Config.new(api_key: "valid_test_key_123", retry_max_delay: 0)
+        expect { config.validate! }.to raise_error(
+          SecApi::ConfigurationError,
+          /retry_max_delay must be positive/
+        )
+      end
+
+      it "raises ConfigurationError when retry_max_delay is negative" do
+        config = SecApi::Config.new(api_key: "valid_test_key_123", retry_max_delay: -60.0)
+        expect { config.validate! }.to raise_error(
+          SecApi::ConfigurationError,
+          /retry_max_delay must be positive/
+        )
+      end
+
+      it "raises ConfigurationError when retry_max_delay < retry_initial_delay" do
+        config = SecApi::Config.new(
+          api_key: "valid_test_key_123",
+          retry_initial_delay: 10.0,
+          retry_max_delay: 5.0
+        )
+        expect { config.validate! }.to raise_error(
+          SecApi::ConfigurationError,
+          /retry_max_delay must be >= retry_initial_delay/
+        )
+      end
+
+      it "raises ConfigurationError when retry_backoff_factor is less than 1" do
+        config = SecApi::Config.new(api_key: "valid_test_key_123", retry_backoff_factor: 0)
+        expect { config.validate! }.to raise_error(
+          SecApi::ConfigurationError,
+          /retry_backoff_factor must be >= 1/
+        )
+      end
+    end
+
+    context "when retry configuration is valid" do
+      it "does not raise error with custom retry values" do
+        config = SecApi::Config.new(
+          api_key: "valid_test_key_123",
+          retry_max_attempts: 3,
+          retry_initial_delay: 2.0,
+          retry_max_delay: 30.0,
+          retry_backoff_factor: 2
+        )
         expect { config.validate! }.not_to raise_error
       end
     end

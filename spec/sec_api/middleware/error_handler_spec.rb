@@ -255,7 +255,7 @@ RSpec.describe SecApi::Middleware::ErrorHandler do
     context "when Faraday::TimeoutError occurs" do
       it "raises NetworkError with actionable message" do
         # Simulate timeout by stubbing the app call in middleware
-        middleware = described_class.new(-> (_env) { raise Faraday::TimeoutError, "execution expired" })
+        middleware = described_class.new(->(_env) { raise Faraday::TimeoutError, "execution expired" })
         env = {method: :get, url: URI("http://example.com/test")}
 
         expect {
@@ -267,7 +267,7 @@ RSpec.describe SecApi::Middleware::ErrorHandler do
       end
 
       it "inherits from TransientError (retryable)" do
-        middleware = described_class.new(-> (_env) { raise Faraday::TimeoutError, "timeout" })
+        middleware = described_class.new(->(_env) { raise Faraday::TimeoutError, "timeout" })
         env = {method: :get, url: URI("http://example.com/test")}
 
         expect {
@@ -278,7 +278,7 @@ RSpec.describe SecApi::Middleware::ErrorHandler do
 
     context "when Faraday::ConnectionFailed occurs" do
       it "raises NetworkError with actionable message" do
-        middleware = described_class.new(-> (_env) { raise Faraday::ConnectionFailed, "Failed to open TCP connection" })
+        middleware = described_class.new(->(_env) { raise Faraday::ConnectionFailed, "Failed to open TCP connection" })
         env = {method: :get, url: URI("http://example.com/test")}
 
         expect {
@@ -290,7 +290,7 @@ RSpec.describe SecApi::Middleware::ErrorHandler do
       end
 
       it "inherits from TransientError (retryable)" do
-        middleware = described_class.new(-> (_env) { raise Faraday::ConnectionFailed, "connection failed" })
+        middleware = described_class.new(->(_env) { raise Faraday::ConnectionFailed, "connection failed" })
         env = {method: :get, url: URI("http://example.com/test")}
 
         expect {
@@ -301,7 +301,7 @@ RSpec.describe SecApi::Middleware::ErrorHandler do
 
     context "when Faraday::SSLError occurs" do
       it "raises NetworkError with actionable message" do
-        middleware = described_class.new(-> (_env) { raise Faraday::SSLError, "SSL certificate verification failed" })
+        middleware = described_class.new(->(_env) { raise Faraday::SSLError, "SSL certificate verification failed" })
         env = {method: :get, url: URI("https://example.com/test")}
 
         expect {
@@ -313,7 +313,7 @@ RSpec.describe SecApi::Middleware::ErrorHandler do
       end
 
       it "inherits from TransientError (retryable)" do
-        middleware = described_class.new(-> (_env) { raise Faraday::SSLError, "SSL error" })
+        middleware = described_class.new(->(_env) { raise Faraday::SSLError, "SSL error" })
         env = {method: :get, url: URI("https://example.com/test")}
 
         expect {

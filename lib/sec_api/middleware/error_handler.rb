@@ -29,9 +29,13 @@ module SecApi
     # @raise [NetworkError] when network issues occur (timeout, connection failure, SSL error)
     class ErrorHandler < Faraday::Middleware
       def call(env)
-        @app.call(env).on_complete do |response_env|
-          handle_response(response_env)
-        end
+        response = @app.call(env)
+        handle_response(response.env)
+        response
+      rescue Faraday::RetriableResponse => e
+        # Faraday retry raises this to signal a retry - we need to re-raise it
+        # so retry middleware can catch it
+        raise e
       rescue Faraday::TimeoutError => e
         raise NetworkError,
           "Request timeout. " \
@@ -52,6 +56,9 @@ module SecApi
       private
 
       def handle_response(env)
+        # Only handle error responses - skip success responses
+        return if env[:status] >= 200 && env[:status] < 300
+
         case env[:status]
         when 400
           raise ValidationError,
@@ -68,23 +75,23 @@ module SecApi
             "Verify your subscription plan at https://sec-api.io or contact support."
         when 404
           raise NotFoundError,
-            "Resource not found (404): #{env[:url]&.path || 'unknown'}. " \
+            "Resource not found (404): #{env[:url]&.path || "unknown"}. " \
             "Check ticker symbol, CIK, or filing identifier."
         when 422
           raise ValidationError,
             "Unprocessable entity (422): The request was valid but could not be processed. " \
             "This may indicate invalid query logic or unsupported parameter combinations."
         when 429
-          rate_limit_reset = env[:response_headers]&.[]('X-RateLimit-Reset') || env[:response_headers]&.[]('x-ratelimit-reset')
+          rate_limit_reset = env[:response_headers]&.[]("X-RateLimit-Reset") || env[:response_headers]&.[]("x-ratelimit-reset")
           reset_info = rate_limit_reset ? "Reset at: #{rate_limit_reset}. " : ""
           raise RateLimitError,
             "Rate limit exceeded (429 Too Many Requests). " \
             "#{reset_info}" \
-            "Will be automatically retried when retry middleware is configured (Story 1.3)."
+            "automatic retry attempts exhausted. Consider implementing backoff or reducing request rate."
         when 500..504
           raise ServerError,
             "sec-api.io server error (#{env[:status]}). " \
-            "This is a temporary issue that will be automatically retried when retry middleware is configured (Story 1.3)."
+            "automatic retry attempts exhausted. This may indicate a prolonged outage."
         end
       end
     end

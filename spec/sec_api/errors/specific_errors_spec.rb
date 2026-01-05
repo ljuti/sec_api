@@ -138,11 +138,9 @@ RSpec.describe "Specific Error Classes" do
       errors_caught = []
 
       [SecApi::RateLimitError, SecApi::ServerError, SecApi::NetworkError].each do |error_class|
-        begin
-          raise error_class, "Test"
-        rescue SecApi::TransientError => e
-          errors_caught << e.class
-        end
+        raise error_class, "Test"
+      rescue SecApi::TransientError => e
+        errors_caught << e.class
       end
 
       expect(errors_caught).to contain_exactly(
@@ -156,11 +154,9 @@ RSpec.describe "Specific Error Classes" do
       errors_caught = []
 
       [SecApi::AuthenticationError, SecApi::NotFoundError, SecApi::ValidationError].each do |error_class|
-        begin
-          raise error_class, "Test"
-        rescue SecApi::PermanentError => e
-          errors_caught << e.class
-        end
+        raise error_class, "Test"
+      rescue SecApi::PermanentError => e
+        errors_caught << e.class
       end
 
       expect(errors_caught).to contain_exactly(

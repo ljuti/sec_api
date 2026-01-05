@@ -54,7 +54,7 @@ RSpec.describe SecApi::PermanentError do
       expect {
         begin
           raise described_class, "Test error"
-        rescue StandardError => e
+        rescue => e
           expect(e.message).to eq("Test error")
         end
       }.not_to raise_error

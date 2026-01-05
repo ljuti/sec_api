@@ -5,12 +5,13 @@ module SecApi
     config_name :secapi
 
     attr_config :api_key,
-                :base_url,
-                :retry_max_attempts,
-                :retry_initial_delay,
-                :retry_max_delay,
-                :request_timeout,
-                :rate_limit_threshold
+      :base_url,
+      :retry_max_attempts,
+      :retry_initial_delay,
+      :retry_max_delay,
+      :retry_backoff_factor,
+      :request_timeout,
+      :rate_limit_threshold
 
     # Sensible defaults
     def initialize(*)
@@ -19,6 +20,7 @@ module SecApi
       self.retry_max_attempts ||= 5
       self.retry_initial_delay ||= 1.0
       self.retry_max_delay ||= 60.0
+      self.retry_backoff_factor ||= 2
       self.request_timeout ||= 30
       self.rate_limit_threshold ||= 0.1
     end
@@ -31,6 +33,27 @@ module SecApi
 
       if api_key.include?("your_api_key_here") || api_key.length < 10
         raise ConfigurationError, invalid_api_key_message
+      end
+
+      # Retry configuration validation
+      if retry_max_attempts <= 0
+        raise ConfigurationError, "retry_max_attempts must be positive"
+      end
+
+      if retry_initial_delay <= 0
+        raise ConfigurationError, "retry_initial_delay must be positive"
+      end
+
+      if retry_max_delay <= 0
+        raise ConfigurationError, "retry_max_delay must be positive"
+      end
+
+      if retry_max_delay < retry_initial_delay
+        raise ConfigurationError, "retry_max_delay must be >= retry_initial_delay"
+      end
+
+      if retry_backoff_factor < 1
+        raise ConfigurationError, "retry_backoff_factor must be >= 1"
       end
     end
 
