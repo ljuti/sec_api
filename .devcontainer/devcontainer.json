@@ -1,0 +1,46 @@
+{
+  "name": "sec_api Ruby Development",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "args": {
+      "RUBY_VERSION": "3.1"
+    }
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rebornix.ruby",
+        "Shopify.ruby-lsp",
+        "kaiwood.endwise",
+        "jnbt.vscode-rufo",
+        "misogi.ruby-rubocop",
+        "castwide.solargraph"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "ruby.useLanguageServer": true,
+        "ruby.lint": {
+          "standard": true
+        },
+        "ruby.format": "standard"
+      }
+    }
+  },
+
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+
+  "forwardPorts": [],
+
+  "postCreateCommand": ".devcontainer/post-create.sh",
+
+  "postStartCommand": ".devcontainer/post-start.sh",
+
+  "remoteUser": "vscode",
+
+  "mounts": [
+    "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,readonly,type=bind,consistency=cached"
+  ]
+}

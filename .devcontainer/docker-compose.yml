@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+      args:
+        RUBY_VERSION: "3.1"
+
+    volumes:
+      - ..:/workspace:cached
+      # Persist bash history
+      - devcontainer-bashhistory:/home/vscode/.bash_history
+
+    # Overrides default command so container stays running
+    command: sleep infinity
+
+    # Environment variables for development
+    environment:
+      # Add any default environment variables here
+      - SECAPI_BASE_URL=https://api.sec-api.io
+
+    # Use host network for easier local development
+    network_mode: host
+
+volumes:
+  devcontainer-bashhistory:
