@@ -16,6 +16,31 @@ module SecApi
       @_connection ||= build_connection
     end
 
+    def query
+      @_query ||= Query.new(self)
+    end
+
+    def extractor
+      @_extractor ||= Extractor.new(self)
+    end
+
+    def mapping
+      @_mapping ||= Mapping.new(self)
+    end
+
+    # Returns the XBRL extraction proxy for accessing XBRL-to-JSON conversion functionality.
+    #
+    # @return [SecApi::Xbrl] XBRL proxy instance with access to client's Faraday connection
+    #
+    # @example Extract XBRL data from a filing
+    #   client = SecApi::Client.new(api_key: "your_api_key")
+    #   xbrl_data = client.xbrl.to_json(filing)
+    #   xbrl_data.financials[:revenue]  # => 394328000000.0
+    #
+    def xbrl
+      @_xbrl ||= Xbrl.new(self)
+    end
+
     private
 
     def build_connection
@@ -42,20 +67,6 @@ module SecApi
         conn.adapter Faraday.default_adapter
       end
     end
-
-    def query
-      @_query ||= Query.new(self)
-    end
-
-    def extractor
-      @_extractor ||= Extractor.new(self)
-    end
-
-    def mapping
-      @_mapping ||= Mapping.new(self)
-    end
-
-    private
 
     def retry_options
       {

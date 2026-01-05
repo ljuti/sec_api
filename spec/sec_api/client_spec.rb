@@ -48,6 +48,25 @@ RSpec.describe SecApi::Client do
     end
   end
 
+  describe "#xbrl" do
+    let(:client) { SecApi::Client.new(SecApi::Config.new(api_key: "test_api_key_valid")) }
+
+    it "returns an Xbrl proxy instance" do
+      expect(client.xbrl).to be_a(SecApi::Xbrl)
+    end
+
+    it "memoizes the Xbrl proxy (returns same instance)" do
+      xbrl1 = client.xbrl
+      xbrl2 = client.xbrl
+      expect(xbrl1).to equal(xbrl2)
+    end
+
+    it "provides Xbrl proxy access to client connection" do
+      xbrl_proxy = client.xbrl
+      expect(xbrl_proxy.instance_variable_get(:@_client)).to eq(client)
+    end
+  end
+
   describe "error handler middleware integration" do
     let(:config) { SecApi::Config.new(api_key: "test_api_key_valid") }
     let(:client) { SecApi::Client.new(config) }
