@@ -30,6 +30,20 @@ module SecApi
   #     .date_range(from: "2020-01-01", to: "2023-12-31")
   #     .search
   #
+  # @example Full-text search for keywords
+  #   client.query.search_text("merger acquisition").search
+  #
+  # @example Limit results
+  #   client.query.ticker("AAPL").limit(10).search
+  #
+  # @example Combined search with all filters
+  #   client.query
+  #     .ticker("AAPL")
+  #     .form_type("8-K")
+  #     .search_text("acquisition")
+  #     .limit(20)
+  #     .search
+  #
   class Query
     def initialize(client)
       @_client = client
@@ -112,6 +126,56 @@ module SecApi
       self
     end
 
+    # Execute full-text search across filing content.
+    #
+    # Adds a full-text search clause to the query. The search terms are quoted
+    # to match the exact phrase. Combines with other filters using AND.
+    #
+    # @param keywords [String] The search terms to find in filing content
+    # @return [self] Returns self for method chaining
+    # @raise [ArgumentError] when keywords is nil, empty, or whitespace-only
+    #
+    # @example Search for a phrase
+    #   query.search_text("merger acquisition")
+    #   #=> Lucene: '"merger acquisition"'
+    #
+    # @example Combined with other filters
+    #   query.ticker("AAPL").form_type("8-K").search_text("acquisition")
+    #   #=> Lucene: 'ticker:AAPL AND formType:"8-K" AND "acquisition"'
+    #
+    def search_text(keywords)
+      raise ArgumentError, "Search keywords are required" if keywords.nil? || keywords.to_s.strip.empty?
+
+      # Escape backslashes first, then quotes for valid Lucene phrase syntax
+      # In gsub replacement, \\\\ (4 backslashes) produces \\ (2 actual backslashes)
+      escaped = keywords.to_s.strip.gsub("\\") { "\\\\" }.gsub('"', '\\"')
+      @query_parts << "\"#{escaped}\""
+      self
+    end
+
+    # Limit the number of results returned.
+    #
+    # Sets the maximum number of filings to return in the response. When not
+    # specified, defaults to 50 results.
+    #
+    # @param count [Integer, String] The maximum number of results (must be positive)
+    # @return [self] Returns self for method chaining
+    # @raise [ArgumentError] when count is zero or negative
+    #
+    # @example Limit to 10 results
+    #   query.ticker("AAPL").limit(10).search
+    #
+    # @example Default behavior (50 results)
+    #   query.ticker("AAPL").search  # Returns up to 50 filings
+    #
+    def limit(count)
+      count = count.to_i
+      raise ArgumentError, "Limit must be a positive integer" if count <= 0
+
+      @page_size = count
+      self
+    end
+
     # Filter filings by date range.
     #
     # @param from [Date, Time, DateTime, String] Start date (inclusive)
@@ -172,6 +236,8 @@ module SecApi
       if query.is_a?(String)
         # Backward-compatible: raw query string passed directly
         payload = {query: query}.merge(options)
+        response = @_client.connection.post("/", payload)
+        Collections::Filings.new(response.body)
       else
         # Fluent builder: build from accumulated query parts
         lucene_query = to_lucene
@@ -181,10 +247,17 @@ module SecApi
           size: @page_size.to_s,
           sort: @sort_config
         }
-      end
 
-      response = @_client.connection.post("/", payload)
-      Collections::Filings.new(response.body)
+        # Store query context for pagination (excludes 'from' which changes per page)
+        query_context = {
+          query: lucene_query,
+          size: @page_size.to_s,
+          sort: @sort_config
+        }
+
+        response = @_client.connection.post("/", payload)
+        Collections::Filings.new(response.body, client: @_client, query_context: query_context)
+      end
     end
 
     # Returns the assembled Lucene query string for debugging/logging.

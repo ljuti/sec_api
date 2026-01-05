@@ -52,21 +52,6 @@ module SecApi
       freeze
     end
 
-    private
-
-    def deep_freeze(obj)
-      case obj
-      when Hash
-        obj.each_value { |v| deep_freeze(v) }
-        obj.freeze
-      when Array
-        obj.each { |v| deep_freeze(v) }
-        obj.freeze
-      else
-        obj.freeze if obj.respond_to?(:freeze)
-      end
-    end
-
     # Normalize API response (handle string vs symbol keys)
     #
     # @param data [Hash] The raw API response
@@ -86,6 +71,21 @@ module SecApi
     private_class_method def self.normalize_sections(sections)
       return nil unless sections
       sections.transform_keys(&:to_sym)
+    end
+
+    private
+
+    def deep_freeze(obj)
+      case obj
+      when Hash
+        obj.each_value { |v| deep_freeze(v) }
+        obj.freeze
+      when Array
+        obj.each { |v| deep_freeze(v) }
+        obj.freeze
+      else
+        obj.freeze if obj.respond_to?(:freeze)
+      end
     end
   end
 end

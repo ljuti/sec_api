@@ -131,6 +131,27 @@ RSpec.describe "Specific Error Classes" do
         }.not_to raise_error
       end
     end
+
+    describe SecApi::PaginationError do
+      it "inherits from PermanentError" do
+        expect(described_class).to be < SecApi::PermanentError
+      end
+
+      it "can be instantiated with a message" do
+        error = described_class.new("No more pages available")
+        expect(error.message).to eq("No more pages available")
+      end
+
+      it "can be rescued as PermanentError" do
+        expect {
+          begin
+            raise described_class, "Test"
+          rescue SecApi::PermanentError
+            # Successfully caught
+          end
+        }.not_to raise_error
+      end
+    end
   end
 
   describe "Type-based rescue patterns" do
@@ -153,7 +174,7 @@ RSpec.describe "Specific Error Classes" do
     it "allows rescuing all permanent errors together" do
       errors_caught = []
 
-      [SecApi::AuthenticationError, SecApi::NotFoundError, SecApi::ValidationError].each do |error_class|
+      [SecApi::AuthenticationError, SecApi::NotFoundError, SecApi::ValidationError, SecApi::PaginationError].each do |error_class|
         raise error_class, "Test"
       rescue SecApi::PermanentError => e
         errors_caught << e.class
@@ -162,7 +183,8 @@ RSpec.describe "Specific Error Classes" do
       expect(errors_caught).to contain_exactly(
         SecApi::AuthenticationError,
         SecApi::NotFoundError,
-        SecApi::ValidationError
+        SecApi::ValidationError,
+        SecApi::PaginationError
       )
     end
 
