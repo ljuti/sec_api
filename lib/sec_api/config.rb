@@ -11,7 +11,8 @@ module SecApi
       :retry_max_delay,
       :retry_backoff_factor,
       :request_timeout,
-      :rate_limit_threshold
+      :rate_limit_threshold,
+      :on_retry
 
     # Sensible defaults
     def initialize(*)
@@ -52,8 +53,8 @@ module SecApi
         raise ConfigurationError, "retry_max_delay must be >= retry_initial_delay"
       end
 
-      if retry_backoff_factor < 1
-        raise ConfigurationError, "retry_backoff_factor must be >= 1"
+      if retry_backoff_factor < 2
+        raise ConfigurationError, "retry_backoff_factor must be >= 2 for exponential backoff (use 2 for standard exponential: 1s, 2s, 4s, 8s...)"
       end
     end
 

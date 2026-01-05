@@ -260,11 +260,11 @@ RSpec.describe SecApi::Config do
         )
       end
 
-      it "raises ConfigurationError when retry_backoff_factor is less than 1" do
-        config = SecApi::Config.new(api_key: "valid_test_key_123", retry_backoff_factor: 0)
+      it "raises ConfigurationError when retry_backoff_factor is less than 2" do
+        config = SecApi::Config.new(api_key: "valid_test_key_123", retry_backoff_factor: 1)
         expect { config.validate! }.to raise_error(
           SecApi::ConfigurationError,
-          /retry_backoff_factor must be >= 1/
+          /retry_backoff_factor must be >= 2/
         )
       end
     end

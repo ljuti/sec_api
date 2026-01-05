@@ -321,6 +321,17 @@ RSpec.describe SecApi::Middleware::ErrorHandler do
         }.to raise_error(SecApi::TransientError)
       end
     end
+
+    context "when Faraday::RetriableResponse occurs" do
+      it "re-raises the exception so retry middleware can catch it" do
+        middleware = described_class.new(->(_env) { raise Faraday::RetriableResponse.new(nil, {status: 503}) })
+        env = {method: :get, url: URI("https://example.com/test")}
+
+        expect {
+          middleware.call(env)
+        }.to raise_error(Faraday::RetriableResponse)
+      end
+    end
   end
 
   describe "error message security" do
