@@ -17,6 +17,12 @@ module SecApi
       attribute :film_number, Types::String
       attribute :sic, Types::String
 
+      # Override constructor to ensure immutability
+      def initialize(attributes)
+        super
+        freeze
+      end
+
       def self.from_api(data)
         data[:name] = data.delete(:companyName) if data.key?(:companyName)
         data[:irs_number] = data.delete(:irsNo) if data.key?(:irsNo)

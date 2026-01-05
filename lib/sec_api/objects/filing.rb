@@ -6,6 +6,9 @@ require "sec_api/objects/entity"
 module SecApi
   module Objects
     class Filing < Dry::Struct
+      # Strict schema - reject unknown attributes
+      schema schema.strict
+
       transform_keys { |key| key.to_s.underscore }
       transform_keys(&:to_sym)
 
@@ -16,7 +19,7 @@ module SecApi
       attribute :company_name_long, Types::String
       attribute :form_type, Types::String
       attribute :period_of_report, Types::String
-      attribute :filed_at, Types::String
+      attribute :filed_at, Types::JSON::Date  # Auto-coerce string → Date
       attribute :txt_url, Types::String
       attribute :html_url, Types::String
       attribute :xbrl_url, Types::String
@@ -26,9 +29,15 @@ module SecApi
       attribute :data_files, Types::Array.of(DataFile)
       attribute :accession_number, Types::String
 
+      # Override constructor to ensure immutability
+      def initialize(attributes)
+        super
+        freeze
+      end
+
       def url
-        return html_url unless html_url.blank?
-        return txt_url unless txt_url.blank?
+        return html_url unless html_url.nil? || html_url.empty?
+        return txt_url unless txt_url.nil? || txt_url.empty?
         nil
       end
 

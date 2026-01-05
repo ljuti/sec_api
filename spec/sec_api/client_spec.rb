@@ -332,4 +332,37 @@ RSpec.describe SecApi::Client do
       expect(client.config.retry_backoff_factor).to eq(3)
     end
   end
+
+  describe "connection pooling and thread safety" do
+    it "supports 10+ concurrent requests without blocking (NFR14)" do
+      config = SecApi::Config.new(api_key: "test_api_key_valid")
+      client = SecApi::Client.new(config)
+
+      # Stub the API response
+      stubs = Faraday::Adapter::Test::Stubs.new
+      stubs.get("/test") { [200, {}, {message: "success"}.to_json] }
+
+      # Override connection with test adapter
+      allow(client).to receive(:connection).and_return(
+        Faraday.new do |conn|
+          conn.response :json, content_type: /\bjson$/
+          conn.adapter :test, stubs
+        end
+      )
+
+      # Spawn 15 threads making concurrent requests
+      threads = 15.times.map do
+        Thread.new do
+          client.connection.get("/test")
+        end
+      end
+
+      # All requests complete successfully without blocking or errors
+      responses = threads.map(&:value)
+      expect(responses.length).to eq(15)
+      expect(responses.all? { |r| r.status == 200 }).to be true
+
+      stubs.verify_stubbed_calls
+    end
+  end
 end

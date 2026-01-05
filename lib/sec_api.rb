@@ -1,11 +1,11 @@
 # frozen_string_literal: true
 
 require_relative "sec_api/version"
+require "dry-struct"
 require "dry-types"
 
-module Types
-  include Dry.Types()
-end
+# SecApi::Types module must load before objects (no top-level Types pollution)
+require "sec_api/types"
 
 require "sec_api/errors/error"
 require "sec_api/errors/configuration_error"

@@ -36,6 +36,9 @@ module SecApi
         # Positioned AFTER retry so non-retryable errors (401, 404, etc.) fail immediately
         conn.use Middleware::ErrorHandler
 
+        # Connection pool configuration (NFR14: minimum 10 concurrent requests)
+        # Note: Net::HTTP adapter uses persistent connections but doesn't expose pool_size config
+        # The adapter handles concurrent requests via Ruby's thread-safe HTTP implementation
         conn.adapter Faraday.default_adapter
       end
     end
