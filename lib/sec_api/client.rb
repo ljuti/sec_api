@@ -16,8 +16,19 @@ module SecApi
       @_connection ||= build_connection
     end
 
+    # Returns a fresh Query builder instance for constructing SEC filing searches.
+    #
+    # Unlike other proxy methods, this returns a NEW instance on each call
+    # to ensure query chains start with fresh state.
+    #
+    # @return [SecApi::Query] Fresh query builder instance
+    #
+    # @example Each call starts fresh
+    #   client.query.ticker("AAPL").search  # Query: "ticker:AAPL"
+    #   client.query.ticker("TSLA").search  # Query: "ticker:TSLA" (not "ticker:AAPL AND ticker:TSLA")
+    #
     def query
-      @_query ||= Query.new(self)
+      Query.new(self)
     end
 
     def extractor
