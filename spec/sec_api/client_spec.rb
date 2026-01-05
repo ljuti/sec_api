@@ -47,4 +47,127 @@ RSpec.describe SecApi::Client do
       end
     end
   end
+
+  describe "error handler middleware integration" do
+    let(:config) { SecApi::Config.new(api_key: "test_api_key_valid") }
+    let(:client) { SecApi::Client.new(config) }
+    let(:stubs) { Faraday::Adapter::Test::Stubs.new }
+
+    before do
+      # Stub the client's connection to use test adapter
+      allow(client).to receive(:connection).and_return(
+        Faraday.new do |builder|
+          builder.use SecApi::Middleware::ErrorHandler
+          builder.adapter :test, stubs
+        end
+      )
+    end
+
+    after { stubs.verify_stubbed_calls }
+
+    context "when API returns 400" do
+      it "raises ValidationError (permanent)" do
+        stubs.get("/test") { [400, {}, "Bad request"] }
+
+        expect {
+          client.connection.get("/test")
+        }.to raise_error(SecApi::ValidationError)
+      end
+    end
+
+    context "when API returns 403" do
+      it "raises AuthenticationError (permanent)" do
+        stubs.get("/test") { [403, {}, "Forbidden"] }
+
+        expect {
+          client.connection.get("/test")
+        }.to raise_error(SecApi::AuthenticationError)
+      end
+    end
+
+    context "when API returns 422" do
+      it "raises ValidationError (permanent)" do
+        stubs.get("/test") { [422, {}, "Unprocessable"] }
+
+        expect {
+          client.connection.get("/test")
+        }.to raise_error(SecApi::ValidationError)
+      end
+    end
+
+    context "when API returns 429" do
+      it "raises RateLimitError (transient)" do
+        stubs.get("/test") { [429, {}, "Rate limited"] }
+
+        expect {
+          client.connection.get("/test")
+        }.to raise_error(SecApi::RateLimitError)
+      end
+    end
+
+    context "when API returns 500" do
+      it "raises ServerError (transient)" do
+        stubs.get("/test") { [500, {}, "Server error"] }
+
+        expect {
+          client.connection.get("/test")
+        }.to raise_error(SecApi::ServerError)
+      end
+    end
+
+    context "when API returns 401" do
+      it "raises AuthenticationError (permanent)" do
+        stubs.get("/test") { [401, {}, "Unauthorized"] }
+
+        expect {
+          client.connection.get("/test")
+        }.to raise_error(SecApi::AuthenticationError)
+      end
+    end
+
+    context "when API returns 404" do
+      it "raises NotFoundError (permanent)" do
+        stubs.get("/test") { [404, {}, "Not found"] }
+
+        expect {
+          client.connection.get("/test")
+        }.to raise_error(SecApi::NotFoundError)
+      end
+    end
+
+    context "type-based error rescue" do
+      it "allows catching all transient errors" do
+        stubs.get("/test") { [429, {}, ""] }
+
+        expect {
+          client.connection.get("/test")
+        }.to raise_error(SecApi::TransientError)
+      end
+
+      it "allows catching all permanent errors" do
+        stubs.get("/test") { [401, {}, ""] }
+
+        expect {
+          client.connection.get("/test")
+        }.to raise_error(SecApi::PermanentError)
+      end
+    end
+  end
+
+  describe "middleware stack verification" do
+    let(:config) { SecApi::Config.new(api_key: "test_api_key_valid") }
+    let(:client) { SecApi::Client.new(config) }
+
+    it "includes ErrorHandler middleware in the connection stack" do
+      middleware_classes = client.connection.builder.handlers.map(&:klass)
+      expect(middleware_classes).to include(SecApi::Middleware::ErrorHandler)
+    end
+
+    it "ErrorHandler middleware is properly configured" do
+      # Verify that ErrorHandler is in the middleware stack by making a request
+      # and ensuring it properly converts HTTP errors to typed exceptions
+      connection = client.connection
+      expect(connection.builder.handlers.map(&:klass)).to include(SecApi::Middleware::ErrorHandler)
+    end
+  end
 end

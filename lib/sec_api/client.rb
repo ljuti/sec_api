@@ -19,6 +19,8 @@ module SecApi
           # Set API key in Authorization header (redacted from Faraday logs automatically)
           conn.headers["Authorization"] = @_config.api_key
           conn.options.timeout = @_config.request_timeout
+          # Error handler middleware - converts HTTP errors to typed exceptions
+          conn.use Middleware::ErrorHandler
           conn.adapter Faraday.default_adapter
         end
       end
