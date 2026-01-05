@@ -15,8 +15,20 @@ module SecApi
   # @example Query by CIK (leading zeros are automatically stripped)
   #   client.query.cik("0000320193").search
   #
-  # @example Combining filters
-  #   client.query.ticker("AAPL").cik("320193").search
+  # @example Filter by form type
+  #   client.query.form_type("10-K").search
+  #   client.query.form_type("10-K", "10-Q").search  # Multiple types
+  #
+  # @example Filter by date range
+  #   client.query.date_range(from: "2020-01-01", to: "2023-12-31").search
+  #   client.query.date_range(from: Date.new(2020, 1, 1), to: Date.today).search
+  #
+  # @example Combining multiple filters
+  #   client.query
+  #     .ticker("AAPL")
+  #     .form_type("10-K")
+  #     .date_range(from: "2020-01-01", to: "2023-12-31")
+  #     .search
   #
   class Query
     def initialize(client)
@@ -69,6 +81,63 @@ module SecApi
       normalized_cik = cik_number.to_s.gsub(/^0+/, "")
       raise ArgumentError, "CIK cannot be empty or zero" if normalized_cik.empty?
       @query_parts << "cik:#{normalized_cik}"
+      self
+    end
+
+    # Filter filings by form type(s).
+    #
+    # @param types [Array<String>] One or more form types to filter by
+    # @return [self] Returns self for method chaining
+    #
+    # @example Single form type
+    #   query.form_type("10-K")  #=> Lucene: 'formType:"10-K"'
+    #
+    # @example Multiple form types
+    #   query.form_type("10-K", "10-Q")  #=> Lucene: 'formType:("10-K" OR "10-Q")'
+    #
+    # @note Form types are case-sensitive. "10-K" and "10-k" are different.
+    # @raise [ArgumentError] when no form types are provided
+    #
+    def form_type(*types)
+      types = types.flatten.map(&:to_s)
+      raise ArgumentError, "At least one form type is required" if types.empty?
+
+      @query_parts << if types.size == 1
+        "formType:\"#{types.first}\""
+      else
+        quoted_types = types.map { |t| "\"#{t}\"" }.join(" OR ")
+        "formType:(#{quoted_types})"
+      end
+
+      self
+    end
+
+    # Filter filings by date range.
+    #
+    # @param from [Date, Time, DateTime, String] Start date (inclusive)
+    # @param to [Date, Time, DateTime, String] End date (inclusive)
+    # @return [self] Returns self for method chaining
+    # @raise [ArgumentError] when from or to is nil
+    # @raise [ArgumentError] when from or to is an unsupported type
+    # @raise [ArgumentError] when string is not in ISO 8601 format (YYYY-MM-DD)
+    #
+    # @example With ISO 8601 strings
+    #   query.date_range(from: "2020-01-01", to: "2023-12-31")
+    #
+    # @example With Date objects
+    #   query.date_range(from: Date.new(2020, 1, 1), to: Date.today)
+    #
+    # @example With Time objects (including ActiveSupport::TimeWithZone)
+    #   query.date_range(from: 1.year.ago, to: Time.now)
+    #
+    def date_range(from:, to:)
+      raise ArgumentError, "from: is required" if from.nil?
+      raise ArgumentError, "to: is required" if to.nil?
+
+      from_date = coerce_date(from)
+      to_date = coerce_date(to)
+
+      @query_parts << "filedAt:[#{from_date} TO #{to_date}]"
       self
     end
 
@@ -143,6 +212,35 @@ module SecApi
     def fulltext(query, options = {})
       response = @_client.connection.post("/full-text-search", {query: query}.merge(options))
       FulltextResults.new(response.body)
+    end
+
+    private
+
+    # Coerces various date types to ISO 8601 string format (YYYY-MM-DD).
+    #
+    # @param value [Date, Time, DateTime, String] The date value to coerce
+    # @return [String] ISO 8601 formatted date string
+    # @raise [ArgumentError] when value is an unsupported type
+    # @raise [ArgumentError] when string is not in ISO 8601 format (YYYY-MM-DD)
+    #
+    def coerce_date(value)
+      case value
+      when Date
+        value.strftime("%Y-%m-%d")
+      when Time, DateTime
+        value.to_date.strftime("%Y-%m-%d")
+      when String
+        unless value.match?(/\A\d{4}-\d{2}-\d{2}\z/)
+          raise ArgumentError, "Date string must be in ISO 8601 format (YYYY-MM-DD), got: #{value.inspect}"
+        end
+        value
+      else
+        if defined?(ActiveSupport::TimeWithZone) && value.is_a?(ActiveSupport::TimeWithZone)
+          value.to_date.strftime("%Y-%m-%d")
+        else
+          raise ArgumentError, "Expected Date, Time, DateTime, or ISO 8601 string, got #{value.class}"
+        end
+      end
     end
   end
 end

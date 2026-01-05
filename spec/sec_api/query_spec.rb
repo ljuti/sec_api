@@ -440,6 +440,200 @@ RSpec.describe SecApi::Query do
     end
   end
 
+  describe "#date_range (Story 2.2, AC: #3, #4, #5)" do
+    context "with ISO 8601 strings (AC: #3)" do
+      it "builds correct Lucene range query" do
+        stubs.post("/") do |env|
+          body = JSON.parse(env.body)
+          expect(body["query"]).to eq("filedAt:[2020-01-01 TO 2023-12-31]")
+          [200, json_headers, empty_response]
+        end
+
+        client.query.date_range(from: "2020-01-01", to: "2023-12-31").search
+      end
+    end
+
+    context "with Date objects (AC: #4)" do
+      it "coerces Date objects to ISO 8601 strings" do
+        stubs.post("/") do |env|
+          body = JSON.parse(env.body)
+          expect(body["query"]).to eq("filedAt:[2020-01-01 TO 2023-12-31]")
+          [200, json_headers, empty_response]
+        end
+
+        client.query.date_range(from: Date.new(2020, 1, 1), to: Date.new(2023, 12, 31)).search
+      end
+    end
+
+    context "with Time objects (AC: #4)" do
+      it "coerces Time objects to ISO 8601 strings" do
+        stubs.post("/") do |env|
+          body = JSON.parse(env.body)
+          expect(body["query"]).to match(/filedAt:\[\d{4}-\d{2}-\d{2} TO \d{4}-\d{2}-\d{2}\]/)
+          [200, json_headers, empty_response]
+        end
+
+        client.query.date_range(from: Time.new(2020, 1, 1), to: Time.new(2023, 12, 31)).search
+      end
+    end
+
+    context "with DateTime objects" do
+      it "coerces DateTime objects to ISO 8601 strings" do
+        stubs.post("/") do |env|
+          body = JSON.parse(env.body)
+          expect(body["query"]).to eq("filedAt:[2020-01-01 TO 2023-12-31]")
+          [200, json_headers, empty_response]
+        end
+
+        client.query.date_range(from: DateTime.new(2020, 1, 1), to: DateTime.new(2023, 12, 31)).search
+      end
+    end
+
+    context "combined filters (AC: #5)" do
+      it "combines ticker, form_type, and date_range with AND" do
+        stubs.post("/") do |env|
+          body = JSON.parse(env.body)
+          expect(body["query"]).to eq('ticker:NEM AND formType:"10-K" AND filedAt:[2023-01-01 TO 2024-01-01]')
+          [200, json_headers, empty_response]
+        end
+
+        client.query
+          .ticker("NEM")
+          .form_type("10-K")
+          .date_range(from: Date.new(2023, 1, 1), to: Date.new(2024, 1, 1))
+          .search
+      end
+    end
+
+    it "returns self for method chaining" do
+      query = client.query
+      result = query.date_range(from: "2020-01-01", to: "2023-12-31")
+      expect(result).to be(query)
+      expect(result.object_id).to eq(query.object_id)
+    end
+
+    context "input validation" do
+      it "raises ArgumentError when from: is nil" do
+        expect {
+          client.query.date_range(from: nil, to: "2023-12-31")
+        }.to raise_error(ArgumentError, "from: is required")
+      end
+
+      it "raises ArgumentError when to: is nil" do
+        expect {
+          client.query.date_range(from: "2020-01-01", to: nil)
+        }.to raise_error(ArgumentError, "to: is required")
+      end
+
+      it "raises ArgumentError for unsupported types" do
+        expect {
+          client.query.date_range(from: 12345, to: "2023-12-31")
+        }.to raise_error(ArgumentError, /Expected Date, Time, DateTime, or ISO 8601 string/)
+      end
+
+      it "raises ArgumentError for invalid date string format" do
+        expect {
+          client.query.date_range(from: "not-a-date", to: "2023-12-31")
+        }.to raise_error(ArgumentError, /Date string must be in ISO 8601 format/)
+      end
+
+      it "raises ArgumentError for date string with wrong separator" do
+        expect {
+          client.query.date_range(from: "2020/01/01", to: "2023-12-31")
+        }.to raise_error(ArgumentError, /Date string must be in ISO 8601 format/)
+      end
+
+      it "raises ArgumentError for date string with time component" do
+        expect {
+          client.query.date_range(from: "2020-01-01T00:00:00", to: "2023-12-31")
+        }.to raise_error(ArgumentError, /Date string must be in ISO 8601 format/)
+      end
+    end
+  end
+
+  describe "#form_type (Story 2.2, AC: #1, #2)" do
+    context "with single form type (AC: #1)" do
+      it "builds correct Lucene query with quoted form type" do
+        stubs.post("/") do |env|
+          body = JSON.parse(env.body)
+          expect(body["query"]).to eq('formType:"10-K"')
+          [200, json_headers, empty_response]
+        end
+
+        client.query.form_type("10-K").search
+      end
+
+      it "preserves case sensitivity (form types are case-sensitive)" do
+        stubs.post("/") do |env|
+          body = JSON.parse(env.body)
+          expect(body["query"]).to eq('formType:"10-k"')
+          [200, json_headers, empty_response]
+        end
+
+        client.query.form_type("10-k").search
+      end
+    end
+
+    context "with multiple form types (AC: #2)" do
+      it "builds Lucene query with formType:(\"10-K\" OR \"10-Q\") format" do
+        stubs.post("/") do |env|
+          body = JSON.parse(env.body)
+          expect(body["query"]).to eq('formType:("10-K" OR "10-Q")')
+          [200, json_headers, empty_response]
+        end
+
+        client.query.form_type("10-K", "10-Q").search
+      end
+
+      it "handles three or more form types" do
+        stubs.post("/") do |env|
+          body = JSON.parse(env.body)
+          expect(body["query"]).to eq('formType:("10-K" OR "10-Q" OR "8-K")')
+          [200, json_headers, empty_response]
+        end
+
+        client.query.form_type("10-K", "10-Q", "8-K").search
+      end
+
+      it "handles form types passed as array" do
+        stubs.post("/") do |env|
+          body = JSON.parse(env.body)
+          expect(body["query"]).to eq('formType:("10-K" OR "10-Q")')
+          [200, json_headers, empty_response]
+        end
+
+        client.query.form_type(["10-K", "10-Q"]).search
+      end
+    end
+
+    it "returns self for method chaining" do
+      query = client.query
+      result = query.form_type("10-K")
+      expect(result).to be(query)
+      expect(result.object_id).to eq(query.object_id)
+    end
+
+    it "combines with ticker filter using AND" do
+      stubs.post("/") do |env|
+        body = JSON.parse(env.body)
+        expect(body["query"]).to eq('ticker:AAPL AND formType:"10-K"')
+        [200, json_headers, empty_response]
+      end
+
+      client.query.ticker("AAPL").form_type("10-K").search
+    end
+
+    context "input validation" do
+      it "raises ArgumentError when no form types provided" do
+        expect { client.query.form_type }.to raise_error(ArgumentError, "At least one form type is required")
+      end
+
+      it "raises ArgumentError for empty array" do
+        expect { client.query.form_type([]) }.to raise_error(ArgumentError, "At least one form type is required")
+      end
+    end
+  end
+
   describe "fresh query state per chain" do
     it "each call to client.query starts with fresh state" do
       # First query
