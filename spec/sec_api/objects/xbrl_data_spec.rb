@@ -8,22 +8,108 @@ RSpec.describe SecApi::XbrlData do
       expect(described_class).to be < Dry::Struct
     end
 
-    it "creates instance with valid attributes" do
+    it "creates instance with statement attributes" do
       xbrl_data = described_class.new(
-        financials: {revenue: 1_000_000.0, assets: 5_000_000.0}
+        statements_of_income: {},
+        balance_sheets: {},
+        statements_of_cash_flows: {},
+        cover_page: {}
       )
 
       expect(xbrl_data).to be_a(SecApi::XbrlData)
-      expect(xbrl_data.financials[:revenue]).to eq(1_000_000.0)
-      expect(xbrl_data.financials[:assets]).to eq(5_000_000.0)
+    end
+  end
+
+  describe "statement attributes" do
+    let(:revenue_fact) do
+      SecApi::Fact.new(
+        value: "394328000000",
+        decimals: "-6",
+        unit_ref: "usd",
+        period: SecApi::Period.new(start_date: "2022-09-25", end_date: "2023-09-30")
+      )
+    end
+
+    let(:assets_fact) do
+      SecApi::Fact.new(
+        value: "352755000000",
+        decimals: "-6",
+        unit_ref: "usd",
+        period: SecApi::Period.new(instant: "2023-09-30")
+      )
+    end
+
+    it "accepts statements_of_income with Fact objects" do
+      xbrl_data = described_class.new(
+        statements_of_income: {
+          "RevenueFromContractWithCustomerExcludingAssessedTax" => [revenue_fact]
+        }
+      )
+
+      facts = xbrl_data.statements_of_income["RevenueFromContractWithCustomerExcludingAssessedTax"]
+      expect(facts).to be_an(Array)
+      expect(facts.first.value).to eq("394328000000")
+    end
+
+    it "accepts balance_sheets with Fact objects" do
+      xbrl_data = described_class.new(
+        balance_sheets: {"Assets" => [assets_fact]}
+      )
+
+      facts = xbrl_data.balance_sheets["Assets"]
+      expect(facts.first.value).to eq("352755000000")
+      expect(facts.first.period.instant?).to be true
+    end
+
+    it "accepts statements_of_cash_flows with Fact objects" do
+      cash_flow_fact = SecApi::Fact.new(value: "96995000000")
+      xbrl_data = described_class.new(
+        statements_of_cash_flows: {"NetIncomeLoss" => [cash_flow_fact]}
+      )
+
+      facts = xbrl_data.statements_of_cash_flows["NetIncomeLoss"]
+      expect(facts.first.to_numeric).to eq(96995000000.0)
+    end
+
+    it "accepts cover_page with Fact objects" do
+      doc_type_fact = SecApi::Fact.new(value: "10-K")
+      registrant_fact = SecApi::Fact.new(value: "Apple Inc")
+
+      xbrl_data = described_class.new(
+        cover_page: {
+          "DocumentType" => [doc_type_fact],
+          "EntityRegistrantName" => [registrant_fact]
+        }
+      )
+
+      expect(xbrl_data.cover_page["DocumentType"].first.value).to eq("10-K")
+      expect(xbrl_data.cover_page["EntityRegistrantName"].first.value).to eq("Apple Inc")
+    end
+
+    it "allows nil for all statement attributes" do
+      xbrl_data = described_class.new
+      expect(xbrl_data.statements_of_income).to be_nil
+      expect(xbrl_data.balance_sheets).to be_nil
+      expect(xbrl_data.statements_of_cash_flows).to be_nil
+      expect(xbrl_data.cover_page).to be_nil
+    end
+  end
+
+  describe "#valid?" do
+    it "returns true (placeholder for Story 4.3 validation)" do
+      xbrl_data = described_class.new(
+        statements_of_income: {}
+      )
+      expect(xbrl_data.valid?).to be true
     end
   end
 
   describe "immutability" do
     let(:xbrl_data) do
+      revenue_fact = SecApi::Fact.new(value: "1000000")
       described_class.new(
-        financials: {revenue: 1_000_000.0, assets: 5_000_000.0},
-        metadata: {source_url: "https://example.com"}
+        statements_of_income: {"Revenue" => [revenue_fact]},
+        balance_sheets: {"Assets" => [SecApi::Fact.new(value: "5000000")]}
       )
     end
 
@@ -31,217 +117,214 @@ RSpec.describe SecApi::XbrlData do
       expect(xbrl_data).to be_frozen
     end
 
-    it "has frozen nested financials hash" do
-      expect(xbrl_data.financials).to be_frozen
+    it "has frozen statements_of_income hash" do
+      expect(xbrl_data.statements_of_income).to be_frozen
     end
 
-    it "has frozen nested metadata hash" do
-      expect(xbrl_data.metadata).to be_frozen
+    it "has frozen balance_sheets hash" do
+      expect(xbrl_data.balance_sheets).to be_frozen
     end
 
-    it "raises error when trying to modify financials" do
+    it "raises error when trying to modify statements" do
       expect {
-        xbrl_data.financials[:revenue] = 9_999_999.0
+        xbrl_data.statements_of_income["NewElement"] = []
       }.to raise_error(FrozenError)
     end
   end
 
-  describe "type coercion" do
-    it "coerces string revenue to float" do
-      xbrl_data = described_class.new(
-        financials: {revenue: "1000000.50"}
-      )
-
-      expect(xbrl_data.financials[:revenue]).to eq(1_000_000.5)
-      expect(xbrl_data.financials[:revenue]).to be_a(Float)
+  describe ".from_api" do
+    let(:api_response) do
+      {
+        StatementsOfIncome: {
+          RevenueFromContractWithCustomerExcludingAssessedTax: [
+            {value: "394328000000", decimals: "-6", unitRef: "usd", period: {startDate: "2022-09-25", endDate: "2023-09-30"}}
+          ],
+          CostOfGoodsAndServicesSold: [
+            {value: "214137000000", decimals: "-6", unitRef: "usd", period: {startDate: "2022-09-25", endDate: "2023-09-30"}}
+          ]
+        },
+        BalanceSheets: {
+          Assets: [
+            {value: "352755000000", decimals: "-6", unitRef: "usd", period: {instant: "2023-09-30"}}
+          ]
+        },
+        StatementsOfCashFlows: {
+          NetIncomeLoss: [
+            {value: "96995000000", decimals: "-6", unitRef: "usd", period: {startDate: "2022-09-25", endDate: "2023-09-30"}}
+          ]
+        },
+        CoverPage: {
+          DocumentType: [{value: "10-K"}],
+          EntityRegistrantName: [{value: "Apple Inc"}],
+          DocumentPeriodEndDate: [{value: "2023-09-30"}]
+        }
+      }
     end
 
-    it "coerces string assets to float" do
-      xbrl_data = described_class.new(
-        financials: {assets: "5000000.75"}
-      )
+    it "parses API response into XbrlData object" do
+      xbrl_data = described_class.from_api(api_response)
 
-      expect(xbrl_data.financials[:assets]).to eq(5_000_000.75)
-      expect(xbrl_data.financials[:assets]).to be_a(Float)
-    end
-  end
-
-  describe "optional attributes" do
-    it "accepts nil financials" do
-      xbrl_data = described_class.new(financials: nil)
-      expect(xbrl_data.financials).to be_nil
+      expect(xbrl_data).to be_a(SecApi::XbrlData)
     end
 
-    it "accepts nil metadata" do
-      xbrl_data = described_class.new(metadata: nil)
-      expect(xbrl_data.metadata).to be_nil
+    it "converts StatementsOfIncome to statements_of_income" do
+      xbrl_data = described_class.from_api(api_response)
+
+      revenue_facts = xbrl_data.statements_of_income["RevenueFromContractWithCustomerExcludingAssessedTax"]
+      expect(revenue_facts).to be_an(Array)
+      expect(revenue_facts.first).to be_a(SecApi::Fact)
+      expect(revenue_facts.first.value).to eq("394328000000")
     end
 
-    it "accepts nil validation_results" do
-      xbrl_data = described_class.new(validation_results: nil)
-      expect(xbrl_data.validation_results).to be_nil
+    it "converts BalanceSheets to balance_sheets" do
+      xbrl_data = described_class.from_api(api_response)
+
+      assets_facts = xbrl_data.balance_sheets["Assets"]
+      expect(assets_facts.first.value).to eq("352755000000")
+      expect(assets_facts.first.period.instant?).to be true
     end
 
-    it "accepts financials with nil revenue" do
-      xbrl_data = described_class.new(
-        financials: {revenue: nil, assets: 5_000_000.0}
-      )
+    it "converts StatementsOfCashFlows to statements_of_cash_flows" do
+      xbrl_data = described_class.from_api(api_response)
 
-      expect(xbrl_data.financials[:revenue]).to be_nil
-      expect(xbrl_data.financials[:assets]).to eq(5_000_000.0)
-    end
-  end
-
-  describe "schema flexibility for XBRL taxonomy variations" do
-    it "ignores unknown top-level attributes" do
-      # XBRL APIs may return unexpected fields - we should not fail
-      xbrl_data = described_class.new(
-        financials: {revenue: 1000.0},
-        unknown_field: "ignored"
-      )
-
-      expect(xbrl_data.financials[:revenue]).to eq(1000.0)
-      expect(xbrl_data).not_to respond_to(:unknown_field)
+      net_income_facts = xbrl_data.statements_of_cash_flows["NetIncomeLoss"]
+      expect(net_income_facts.first.to_numeric).to eq(96995000000.0)
     end
 
-    it "allows unknown financial metrics for taxonomy flexibility" do
-      # Different XBRL taxonomies use different field names
-      xbrl_data = described_class.new(
-        financials: {revenue: 1000.0, custom_metric: 999.0}
-      )
+    it "converts CoverPage to cover_page" do
+      xbrl_data = described_class.from_api(api_response)
 
-      expect(xbrl_data.financials[:revenue]).to eq(1000.0)
-      # Unknown fields are silently ignored in optional schemas
+      expect(xbrl_data.cover_page["DocumentType"].first.value).to eq("10-K")
+      expect(xbrl_data.cover_page["EntityRegistrantName"].first.value).to eq("Apple Inc")
     end
 
-    it "allows unknown metadata fields" do
-      # Future API versions may add new metadata fields
-      xbrl_data = described_class.new(
-        metadata: {source_url: "https://example.com", future_field: "allowed"}
-      )
+    it "preserves element names as-is (no snake_case conversion)" do
+      xbrl_data = described_class.from_api(api_response)
 
-      expect(xbrl_data.metadata[:source_url]).to eq("https://example.com")
+      # Element names should remain in their original taxonomy format
+      expect(xbrl_data.statements_of_income.keys).to include("RevenueFromContractWithCustomerExcludingAssessedTax")
+      expect(xbrl_data.statements_of_income.keys).to include("CostOfGoodsAndServicesSold")
+    end
+
+    it "handles string keys from JSON parsing" do
+      string_key_response = {
+        "StatementsOfIncome" => {
+          "Revenue" => [{"value" => "1000000"}]
+        }
+      }
+
+      xbrl_data = described_class.from_api(string_key_response)
+      expect(xbrl_data.statements_of_income["Revenue"].first.value).to eq("1000000")
+    end
+
+    it "handles missing statement sections gracefully" do
+      partial_response = {
+        StatementsOfIncome: {Revenue: [{value: "1000"}]}
+      }
+
+      xbrl_data = described_class.from_api(partial_response)
+
+      expect(xbrl_data.statements_of_income).not_to be_nil
+      expect(xbrl_data.balance_sheets).to be_nil
+      expect(xbrl_data.statements_of_cash_flows).to be_nil
+      expect(xbrl_data.cover_page).to be_nil
+    end
+
+    it "handles empty response" do
+      xbrl_data = described_class.from_api({})
+
+      expect(xbrl_data.statements_of_income).to be_nil
+      expect(xbrl_data.balance_sheets).to be_nil
+    end
+
+    it "returns immutable XbrlData" do
+      xbrl_data = described_class.from_api(api_response)
+      expect(xbrl_data).to be_frozen
     end
   end
 
   describe "thread safety" do
-    it "is thread-safe for concurrent reads" do
-      xbrl_data = described_class.new(
-        financials: {
-          revenue: 1_000_000.0,
-          assets: 5_000_000.0,
-          liabilities: 2_000_000.0,
-          equity: 3_000_000.0
-        }
+    let(:xbrl_data) do
+      revenue_fact = SecApi::Fact.new(value: "1000000")
+      assets_fact = SecApi::Fact.new(value: "5000000")
+      described_class.new(
+        statements_of_income: {"Revenue" => [revenue_fact]},
+        balance_sheets: {"Assets" => [assets_fact]}
       )
+    end
 
-      # Spawn 10 threads accessing the same object
+    it "is thread-safe for concurrent reads" do
       threads = 10.times.map do
         Thread.new do
           100.times do
-            xbrl_data.financials[:revenue]
-            xbrl_data.financials[:assets]
-            xbrl_data.financials[:liabilities]
-            xbrl_data.financials[:equity]
+            xbrl_data.statements_of_income["Revenue"]
+            xbrl_data.balance_sheets["Assets"]
           end
         end
       end
 
-      # All threads complete without errors
       expect { threads.each(&:join) }.not_to raise_error
     end
 
     it "maintains data integrity across concurrent access" do
-      xbrl_data = described_class.new(
-        financials: {revenue: 1_000_000.0}
-      )
-
       results = []
       threads = 10.times.map do
         Thread.new do
-          xbrl_data.financials[:revenue]
+          xbrl_data.statements_of_income["Revenue"].first.value
         end
       end
 
       threads.each { |t| results << t.value }
-
-      # All threads read the same value
-      expect(results.uniq).to eq([1_000_000.0])
+      expect(results.uniq).to eq(["1000000"])
     end
 
     it "prevents concurrent modification attempts" do
-      xbrl_data = described_class.new(
-        financials: {revenue: 1_000_000.0, assets: 5_000_000.0}
-      )
-
-      # Spawn 10 threads all trying to modify the frozen financials hash
       threads = 10.times.map do
         Thread.new do
           expect {
-            xbrl_data.financials[:revenue] = 9_999_999.0
+            xbrl_data.statements_of_income["NewElement"] = []
           }.to raise_error(FrozenError)
         end
       end
 
-      # All threads complete with expected FrozenError
       expect { threads.each(&:join) }.not_to raise_error
     end
   end
 
-  describe "nested schema structure" do
-    it "accepts all financial metrics when provided" do
-      xbrl_data = described_class.new(
-        financials: {
-          revenue: 1_000_000.0,
-          total_revenue: 1_100_000.0,
-          assets: 5_000_000.0,
-          total_assets: 5_500_000.0,
-          current_assets: 2_000_000.0,
-          liabilities: 2_000_000.0,
-          total_liabilities: 2_200_000.0,
-          current_liabilities: 800_000.0,
-          stockholders_equity: 3_000_000.0,
-          equity: 3_000_000.0,
-          cash_flow: 500_000.0,
-          operating_cash_flow: 550_000.0,
-          period_end_date: Date.new(2024, 12, 31)
+  describe "accessing financial data" do
+    let(:api_response) do
+      {
+        StatementsOfIncome: {
+          RevenueFromContractWithCustomerExcludingAssessedTax: [
+            {value: "394328000000", decimals: "-6", unitRef: "usd", period: {startDate: "2022-09-25", endDate: "2023-09-30"}},
+            {value: "365817000000", decimals: "-6", unitRef: "usd", period: {startDate: "2021-09-26", endDate: "2022-09-24"}}
+          ]
+        },
+        BalanceSheets: {
+          Assets: [
+            {value: "352755000000", decimals: "-6", unitRef: "usd", period: {instant: "2023-09-30"}},
+            {value: "352583000000", decimals: "-6", unitRef: "usd", period: {instant: "2022-09-24"}}
+          ]
         }
-      )
-
-      expect(xbrl_data.financials[:revenue]).to eq(1_000_000.0)
-      expect(xbrl_data.financials[:total_revenue]).to eq(1_100_000.0)
-      expect(xbrl_data.financials[:assets]).to eq(5_000_000.0)
-      expect(xbrl_data.financials[:period_end_date]).to eq(Date.new(2024, 12, 31))
+      }
     end
 
-    it "accepts metadata with all fields" do
-      xbrl_data = described_class.new(
-        metadata: {
-          source_url: "https://www.sec.gov/example",
-          retrieved_at: DateTime.new(2025, 1, 5, 12, 0, 0),
-          form_type: "10-K",
-          cik: "0000320193",
-          ticker: "AAPL"
-        }
-      )
+    it "allows access to multiple periods for same element" do
+      xbrl_data = described_class.from_api(api_response)
 
-      expect(xbrl_data.metadata[:source_url]).to eq("https://www.sec.gov/example")
-      expect(xbrl_data.metadata[:form_type]).to eq("10-K")
-      expect(xbrl_data.metadata[:ticker]).to eq("AAPL")
+      revenue_facts = xbrl_data.statements_of_income["RevenueFromContractWithCustomerExcludingAssessedTax"]
+      expect(revenue_facts.length).to eq(2)
+      expect(revenue_facts[0].to_numeric).to eq(394328000000.0)
+      expect(revenue_facts[1].to_numeric).to eq(365817000000.0)
     end
 
-    it "accepts validation_results with passed and errors" do
-      xbrl_data = described_class.new(
-        validation_results: {
-          passed: false,
-          errors: ["Missing revenue field", "Invalid date format"],
-          warnings: ["Deprecated field used"]
-        }
-      )
+    it "allows filtering facts by period" do
+      xbrl_data = described_class.from_api(api_response)
 
-      expect(xbrl_data.validation_results[:passed]).to eq(false)
-      expect(xbrl_data.validation_results[:errors]).to eq(["Missing revenue field", "Invalid date format"])
-      expect(xbrl_data.validation_results[:warnings]).to eq(["Deprecated field used"])
+      assets_facts = xbrl_data.balance_sheets["Assets"]
+      latest = assets_facts.find { |f| f.period.instant == Date.new(2023, 9, 30) }
+
+      expect(latest.to_numeric).to eq(352755000000.0)
     end
   end
 end

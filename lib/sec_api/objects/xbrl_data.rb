@@ -6,92 +6,113 @@ module SecApi
   # Immutable value object representing XBRL financial data extracted from SEC filings.
   #
   # This class uses Dry::Struct for type safety and immutability, ensuring thread-safe
-  # access to financial metrics. All nested hashes are deeply frozen to prevent modification.
+  # access to financial data. All nested structures are deeply frozen to prevent modification.
   #
-  # @example Create XbrlData with financial metrics
-  #   xbrl_data = SecApi::XbrlData.new(
-  #     financials: {
-  #       revenue: 394328000000.0,
-  #       assets: 352755000000.0,
-  #       liabilities: 290020000000.0
-  #     },
-  #     metadata: {
-  #       source_url: "https://www.sec.gov/cgi-bin/viewer?action=view&cik=320193",
-  #       form_type: "10-K",
-  #       ticker: "AAPL"
-  #     }
-  #   )
+  # The structure mirrors the sec-api.io XBRL-to-JSON response format:
+  # - statements_of_income: Income statement elements (e.g., Revenue, NetIncome)
+  # - balance_sheets: Balance sheet elements (e.g., Assets, Liabilities)
+  # - statements_of_cash_flows: Cash flow statement elements
+  # - cover_page: Document and entity information (DEI taxonomy)
   #
-  # @example Access financial metrics safely across threads
-  #   revenue = xbrl_data.financials[:revenue]  # Thread-safe read
+  # @example Create XbrlData from API response
+  #   xbrl_data = SecApi::XbrlData.from_api(api_response)
+  #   revenue_facts = xbrl_data.statements_of_income["RevenueFromContractWithCustomerExcludingAssessedTax"]
+  #   latest_revenue = revenue_facts.first.to_numeric # => 394328000000.0
+  #
+  # @example Access balance sheet data
+  #   assets_facts = xbrl_data.balance_sheets["Assets"]
+  #   assets_facts.each do |fact|
+  #     puts "#{fact.period.instant}: #{fact.to_numeric}"
+  #   end
   #
   # @see https://dry-rb.org/gems/dry-struct/ Dry::Struct documentation
+  # @see https://sec-api.io/docs/xbrl-to-json sec-api.io XBRL-to-JSON API
   #
   class XbrlData < Dry::Struct
+    include DeepFreezable
+
     # Transform keys to allow string or symbol input
     transform_keys(&:to_sym)
 
-    # Financial metrics schema with strict validation and coercion
-    FinancialsSchema = Types::Hash.schema(
-      revenue?: Types::Coercible::Float.optional,
-      total_revenue?: Types::Coercible::Float.optional,
-      assets?: Types::Coercible::Float.optional,
-      total_assets?: Types::Coercible::Float.optional,
-      current_assets?: Types::Coercible::Float.optional,
-      liabilities?: Types::Coercible::Float.optional,
-      total_liabilities?: Types::Coercible::Float.optional,
-      current_liabilities?: Types::Coercible::Float.optional,
-      stockholders_equity?: Types::Coercible::Float.optional,
-      equity?: Types::Coercible::Float.optional,
-      cash_flow?: Types::Coercible::Float.optional,
-      operating_cash_flow?: Types::Coercible::Float.optional,
-      period_end_date?: Types::JSON::Date.optional
-    ).with_key_transform(&:to_sym)
+    # Statement hash type: element_name => Array of Fact objects
+    StatementHash = Types::Hash.map(Types::String, Types::Array.of(Fact)).optional
 
-    # Metadata schema with strict validation
-    MetadataSchema = Types::Hash.schema(
-      source_url?: Types::String.optional,
-      retrieved_at?: Types::JSON::DateTime.optional,
-      form_type?: Types::String.optional,
-      cik?: Types::String.optional,
-      ticker?: Types::String.optional
-    ).with_key_transform(&:to_sym)
+    # Statements of income (income statement elements)
+    attribute? :statements_of_income, StatementHash
 
-    # Validation results schema
-    ValidationSchema = Types::Hash.schema(
-      passed?: Types::Bool.optional,
-      errors?: Types::Array.of(Types::String).optional,
-      warnings?: Types::Array.of(Types::String).optional
-    ).with_key_transform(&:to_sym)
+    # Balance sheets (balance sheet elements)
+    attribute? :balance_sheets, StatementHash
 
-    # Attributes with optional schemas
-    attribute :financials?, FinancialsSchema.optional
-    attribute :metadata?, MetadataSchema.optional
-    attribute :validation_results?, ValidationSchema.optional
+    # Statements of cash flows (cash flow statement elements)
+    attribute? :statements_of_cash_flows, StatementHash
 
-    # Explicit freeze for immutability (Story 1.4 pattern)
-    # Deep freeze all nested hashes to ensure thread safety
+    # Cover page (document and entity information from DEI taxonomy)
+    attribute? :cover_page, StatementHash
+
+    # Placeholder for validation (will be implemented in Story 4.3)
+    #
+    # @return [Boolean] Always returns true until validation logic is added
+    def valid?
+      true
+    end
+
+    # Override constructor to ensure deep immutability
     def initialize(attributes)
       super
-      deep_freeze(financials) if financials
-      deep_freeze(metadata) if metadata
-      deep_freeze(validation_results) if validation_results
+      deep_freeze(statements_of_income) if statements_of_income
+      deep_freeze(balance_sheets) if balance_sheets
+      deep_freeze(statements_of_cash_flows) if statements_of_cash_flows
+      deep_freeze(cover_page) if cover_page
       freeze
     end
 
-    private
-
-    def deep_freeze(obj)
-      case obj
-      when Hash
-        obj.each_value { |v| deep_freeze(v) }
-        obj.freeze
-      when Array
-        obj.each { |v| deep_freeze(v) }
-        obj.freeze
-      else
-        obj.freeze if obj.respond_to?(:freeze)
-      end
+    # Parses sec-api.io XBRL-to-JSON response into an XbrlData object.
+    #
+    # @param data [Hash] API response with camelCase section keys
+    # @return [XbrlData] Immutable XbrlData object
+    #
+    # @example
+    #   response = {
+    #     StatementsOfIncome: {
+    #       RevenueFromContractWithCustomerExcludingAssessedTax: [
+    #         {value: "394328000000", decimals: "-6", unitRef: "usd", period: {...}}
+    #       ]
+    #     },
+    #     BalanceSheets: {...},
+    #     StatementsOfCashFlows: {...},
+    #     CoverPage: {...}
+    #   }
+    #   xbrl_data = XbrlData.from_api(response)
+    #
+    def self.from_api(data)
+      new(
+        statements_of_income: parse_statement_section(data, :StatementsOfIncome, "StatementsOfIncome"),
+        balance_sheets: parse_statement_section(data, :BalanceSheets, "BalanceSheets"),
+        statements_of_cash_flows: parse_statement_section(data, :StatementsOfCashFlows, "StatementsOfCashFlows"),
+        cover_page: parse_statement_section(data, :CoverPage, "CoverPage")
+      )
     end
+
+    # Parses a statement section from API response.
+    #
+    # @param data [Hash] Full API response
+    # @param symbol_key [Symbol] Symbol key for the section
+    # @param string_key [String] String key for the section
+    # @return [Hash, nil] Parsed section or nil if not present
+    #
+    def self.parse_statement_section(data, symbol_key, string_key)
+      section = data[symbol_key] || data[string_key]
+      return nil if section.nil?
+
+      result = {}
+      section.each do |element_name, facts_array|
+        # Convert element name to string (preserve original taxonomy name)
+        element_key = element_name.to_s
+        result[element_key] = facts_array.map { |fact_data| Fact.from_api(fact_data) }
+      end
+      result
+    end
+
+    private_class_method :parse_statement_section
   end
 end

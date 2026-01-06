@@ -6,6 +6,7 @@ require "dry-types"
 
 # SecApi::Types module must load before objects (no top-level Types pollution)
 require "sec_api/types"
+require "sec_api/deep_freezable"
 
 require "sec_api/errors/error"
 require "sec_api/errors/configuration_error"
@@ -24,6 +25,8 @@ require "sec_api/objects/data_file"
 require "sec_api/objects/entity"
 require "sec_api/objects/filing"
 require "sec_api/objects/fulltext_result"
+require "sec_api/objects/period"
+require "sec_api/objects/fact"
 require "sec_api/objects/xbrl_data"
 require "sec_api/objects/extracted_data"
 require "sec_api/collections/filings"

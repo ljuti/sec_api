@@ -25,6 +25,8 @@ module SecApi
   #   end
   #   threads.each(&:join) # No race conditions
   class ExtractedData < Dry::Struct
+    include DeepFreezable
+
     # Transform keys to allow string or symbol input
     transform_keys(&:to_sym)
 
@@ -71,21 +73,6 @@ module SecApi
     private_class_method def self.normalize_sections(sections)
       return nil unless sections
       sections.transform_keys(&:to_sym)
-    end
-
-    private
-
-    def deep_freeze(obj)
-      case obj
-      when Hash
-        obj.each_value { |v| deep_freeze(v) }
-        obj.freeze
-      when Array
-        obj.each { |v| deep_freeze(v) }
-        obj.freeze
-      else
-        obj.freeze if obj.respond_to?(:freeze)
-      end
     end
   end
 end
