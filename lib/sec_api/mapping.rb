@@ -32,15 +32,27 @@ module SecApi
 
     # Resolve CIK number to company entity
     #
-    # @param cik [String] The CIK number (e.g., "0000320193")
+    # CIK identifiers are normalized to 10 digits with leading zeros before
+    # making the API request. This allows flexible input formats:
+    # - "320193" -> "0000320193"
+    # - "00320193" -> "0000320193"
+    # - 320193 (integer) -> "0000320193"
+    #
+    # @param cik [String, Integer] The CIK number (e.g., "0000320193", "320193", 320193)
     # @return [Entity] Immutable entity object with CIK, ticker, name, etc.
     # @raise [ValidationError] when CIK is nil or empty
     # @raise [AuthenticationError] when API key is invalid
     # @raise [NotFoundError] when CIK is not found
     # @raise [NetworkError] when connection fails
+    #
+    # @example CIK without leading zeros
+    #   entity = client.mapping.cik("320193")
+    #   entity.cik    # => "0000320193"
+    #   entity.ticker # => "AAPL"
     def cik(cik)
       validate_identifier!(cik, "CIK")
-      response = @_client.connection.get("/mapping/cik/#{encode_path(cik)}")
+      normalized = normalize_cik(cik)
+      response = @_client.connection.get("/mapping/cik/#{encode_path(normalized)}")
       Objects::Entity.from_api(response.body)
     end
 
@@ -92,6 +104,14 @@ module SecApi
     # @return [String] URL-encoded path segment
     def encode_path(value)
       URI.encode_www_form_component(value.to_s)
+    end
+
+    # Normalizes CIK to 10 digits with leading zeros
+    # SEC CIK identifiers are always 10 digits (Central Index Key)
+    # @param cik [String, Integer] The CIK value to normalize
+    # @return [String] 10-digit CIK with leading zeros
+    def normalize_cik(cik)
+      cik.to_s.gsub(/^0+/, "").rjust(10, "0")
     end
   end
 end

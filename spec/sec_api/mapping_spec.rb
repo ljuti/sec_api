@@ -7,6 +7,18 @@ RSpec.describe SecApi::Mapping do
   let(:client) { SecApi::Client.new(config) }
   let(:mapping) { client.mapping }
 
+  # Shared helper to build Faraday connection with test stubs
+  def stub_connection(stubs)
+    allow(client).to receive(:connection).and_return(
+      Faraday.new do |conn|
+        conn.request :json
+        conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
+        conn.use SecApi::Middleware::ErrorHandler
+        conn.adapter :test, stubs
+      end
+    )
+  end
+
   describe "#ticker" do
     it "returns Entity object (not raw hash)" do
       stubs = Faraday::Adapter::Test::Stubs.new
@@ -18,15 +30,7 @@ RSpec.describe SecApi::Mapping do
           "exchange" => "NASDAQ"
         }.to_json]
       end
-
-      allow(client).to receive(:connection).and_return(
-        Faraday.new do |conn|
-          conn.request :json
-          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-          conn.use SecApi::Middleware::ErrorHandler
-          conn.adapter :test, stubs
-        end
-      )
+      stub_connection(stubs)
 
       entity = mapping.ticker("AAPL")
 
@@ -44,15 +48,7 @@ RSpec.describe SecApi::Mapping do
           "name" => "Apple Inc."
         }.to_json]
       end
-
-      allow(client).to receive(:connection).and_return(
-        Faraday.new do |conn|
-          conn.request :json
-          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-          conn.use SecApi::Middleware::ErrorHandler
-          conn.adapter :test, stubs
-        end
-      )
+      stub_connection(stubs)
 
       entity = mapping.ticker("AAPL")
 
@@ -70,15 +66,7 @@ RSpec.describe SecApi::Mapping do
           "ticker" => "AAPL"
         }.to_json]
       end
-
-      allow(client).to receive(:connection).and_return(
-        Faraday.new do |conn|
-          conn.request :json
-          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-          conn.use SecApi::Middleware::ErrorHandler
-          conn.adapter :test, stubs
-        end
-      )
+      stub_connection(stubs)
 
       entity = mapping.ticker("AAPL")
 
@@ -97,21 +85,143 @@ RSpec.describe SecApi::Mapping do
           "name" => "Apple Inc."
         }.to_json]
       end
-
-      allow(client).to receive(:connection).and_return(
-        Faraday.new do |conn|
-          conn.request :json
-          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-          conn.use SecApi::Middleware::ErrorHandler
-          conn.adapter :test, stubs
-        end
-      )
+      stub_connection(stubs)
 
       entity = mapping.cik("0000320193")
 
       expect(entity).to be_a(SecApi::Objects::Entity)
       expect(entity.cik).to eq("0000320193")
       expect(entity.ticker).to eq("AAPL")
+      stubs.verify_stubbed_calls
+    end
+
+    it "provides bidirectional resolution (both cik and ticker accessible)" do
+      stubs = Faraday::Adapter::Test::Stubs.new
+      stubs.get("/mapping/cik/0000320193") do
+        [200, {"Content-Type" => "application/json"}, {
+          "cik" => "0000320193",
+          "ticker" => "AAPL",
+          "name" => "Apple Inc.",
+          "exchange" => "NASDAQ"
+        }.to_json]
+      end
+      stub_connection(stubs)
+
+      entity = mapping.cik("0000320193")
+
+      expect(entity.cik).to eq("0000320193")
+      expect(entity.ticker).to eq("AAPL")
+      expect(entity.name).to eq("Apple Inc.")
+      expect(entity.exchange).to eq("NASDAQ")
+      stubs.verify_stubbed_calls
+    end
+
+    it "is immutable (frozen)" do
+      stubs = Faraday::Adapter::Test::Stubs.new
+      stubs.get("/mapping/cik/0000320193") do
+        [200, {"Content-Type" => "application/json"}, {
+          "cik" => "0000320193",
+          "ticker" => "AAPL"
+        }.to_json]
+      end
+      stub_connection(stubs)
+
+      entity = mapping.cik("0000320193")
+
+      expect(entity).to be_frozen
+      stubs.verify_stubbed_calls
+    end
+
+    context "CIK normalization" do
+      it "normalizes CIK without leading zeros (320193 -> 0000320193)" do
+        stubs = Faraday::Adapter::Test::Stubs.new
+        stubs.get("/mapping/cik/0000320193") do
+          [200, {"Content-Type" => "application/json"}, {
+            "cik" => "0000320193",
+            "ticker" => "AAPL",
+            "name" => "Apple Inc."
+          }.to_json]
+        end
+        stub_connection(stubs)
+
+        entity = mapping.cik("320193")
+
+        expect(entity.cik).to eq("0000320193")
+        expect(entity.ticker).to eq("AAPL")
+        stubs.verify_stubbed_calls
+      end
+
+      it "normalizes CIK with partial leading zeros (00320193 -> 0000320193)" do
+        stubs = Faraday::Adapter::Test::Stubs.new
+        stubs.get("/mapping/cik/0000320193") do
+          [200, {"Content-Type" => "application/json"}, {
+            "cik" => "0000320193",
+            "ticker" => "AAPL"
+          }.to_json]
+        end
+        stub_connection(stubs)
+
+        entity = mapping.cik("00320193")
+
+        expect(entity.cik).to eq("0000320193")
+        stubs.verify_stubbed_calls
+      end
+
+      it "leaves already-normalized CIK unchanged" do
+        stubs = Faraday::Adapter::Test::Stubs.new
+        stubs.get("/mapping/cik/0000320193") do
+          [200, {"Content-Type" => "application/json"}, {
+            "cik" => "0000320193",
+            "ticker" => "AAPL"
+          }.to_json]
+        end
+        stub_connection(stubs)
+
+        entity = mapping.cik("0000320193")
+
+        expect(entity.cik).to eq("0000320193")
+        stubs.verify_stubbed_calls
+      end
+
+      it "handles integer input gracefully" do
+        stubs = Faraday::Adapter::Test::Stubs.new
+        stubs.get("/mapping/cik/0000320193") do
+          [200, {"Content-Type" => "application/json"}, {
+            "cik" => "0000320193",
+            "ticker" => "AAPL"
+          }.to_json]
+        end
+        stub_connection(stubs)
+
+        entity = mapping.cik(320193)
+
+        expect(entity.cik).to eq("0000320193")
+        stubs.verify_stubbed_calls
+      end
+
+      it "normalizes integer zero to all-zeros CIK" do
+        stubs = Faraday::Adapter::Test::Stubs.new
+        stubs.get("/mapping/cik/0000000000") do
+          [404, {"Content-Type" => "application/json"}, {"error" => "CIK not found"}.to_json]
+        end
+        stub_connection(stubs)
+
+        expect { mapping.cik(0) }.to raise_error(SecApi::NotFoundError)
+        stubs.verify_stubbed_calls
+      end
+    end
+
+    it "raises NotFoundError for invalid CIK with descriptive message" do
+      stubs = Faraday::Adapter::Test::Stubs.new
+      stubs.get("/mapping/cik/0000000000") do
+        [404, {"Content-Type" => "application/json"}, {"error" => "CIK not found"}.to_json]
+      end
+      stub_connection(stubs)
+
+      expect { mapping.cik("0000000000") }.to raise_error(SecApi::NotFoundError) do |error|
+        expect(error.message).to include("not found")
+        expect(error.message).to include("/mapping/cik/0000000000")
+      end
       stubs.verify_stubbed_calls
     end
   end
@@ -126,15 +236,7 @@ RSpec.describe SecApi::Mapping do
           "name" => "Apple Inc."
         }.to_json]
       end
-
-      allow(client).to receive(:connection).and_return(
-        Faraday.new do |conn|
-          conn.request :json
-          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-          conn.use SecApi::Middleware::ErrorHandler
-          conn.adapter :test, stubs
-        end
-      )
+      stub_connection(stubs)
 
       entity = mapping.cusip("037833100")
 
@@ -153,15 +255,7 @@ RSpec.describe SecApi::Mapping do
           "exchange" => "NASDAQ"
         }.to_json]
       end
-
-      allow(client).to receive(:connection).and_return(
-        Faraday.new do |conn|
-          conn.request :json
-          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-          conn.use SecApi::Middleware::ErrorHandler
-          conn.adapter :test, stubs
-        end
-      )
+      stub_connection(stubs)
 
       entity = mapping.cusip("037833100")
 
@@ -183,15 +277,7 @@ RSpec.describe SecApi::Mapping do
           "name" => "Apple Inc."
         }.to_json]
       end
-
-      allow(client).to receive(:connection).and_return(
-        Faraday.new do |conn|
-          conn.request :json
-          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-          conn.use SecApi::Middleware::ErrorHandler
-          conn.adapter :test, stubs
-        end
-      )
+      stub_connection(stubs)
 
       entity = mapping.name("Apple")
 
@@ -210,15 +296,7 @@ RSpec.describe SecApi::Mapping do
           "exchange" => "NASDAQ"
         }.to_json]
       end
-
-      allow(client).to receive(:connection).and_return(
-        Faraday.new do |conn|
-          conn.request :json
-          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-          conn.use SecApi::Middleware::ErrorHandler
-          conn.adapter :test, stubs
-        end
-      )
+      stub_connection(stubs)
 
       entity = mapping.name("Microsoft")
 
@@ -236,15 +314,7 @@ RSpec.describe SecApi::Mapping do
       stubs.get("/mapping/ticker/INVALID") do
         [404, {"Content-Type" => "application/json"}, {"error" => "Not found"}.to_json]
       end
-
-      allow(client).to receive(:connection).and_return(
-        Faraday.new do |conn|
-          conn.request :json
-          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-          conn.use SecApi::Middleware::ErrorHandler
-          conn.adapter :test, stubs
-        end
-      )
+      stub_connection(stubs)
 
       expect { mapping.ticker("INVALID") }.to raise_error(SecApi::NotFoundError)
       stubs.verify_stubbed_calls
@@ -296,15 +366,7 @@ RSpec.describe SecApi::Mapping do
           "name" => "Berkshire Hathaway Inc."
         }.to_json]
       end
-
-      allow(client).to receive(:connection).and_return(
-        Faraday.new do |conn|
-          conn.request :json
-          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-          conn.use SecApi::Middleware::ErrorHandler
-          conn.adapter :test, stubs
-        end
-      )
+      stub_connection(stubs)
 
       entity = mapping.ticker("BRK.A")
 
@@ -321,15 +383,7 @@ RSpec.describe SecApi::Mapping do
           "name" => "Apple Inc."
         }.to_json]
       end
-
-      allow(client).to receive(:connection).and_return(
-        Faraday.new do |conn|
-          conn.request :json
-          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-          conn.use SecApi::Middleware::ErrorHandler
-          conn.adapter :test, stubs
-        end
-      )
+      stub_connection(stubs)
 
       entity = mapping.name("Apple Inc")
 
@@ -346,15 +400,7 @@ RSpec.describe SecApi::Mapping do
           "name" => "AT&T Inc."
         }.to_json]
       end
-
-      allow(client).to receive(:connection).and_return(
-        Faraday.new do |conn|
-          conn.request :json
-          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-          conn.use SecApi::Middleware::ErrorHandler
-          conn.adapter :test, stubs
-        end
-      )
+      stub_connection(stubs)
 
       entity = mapping.name("AT&T")
 
