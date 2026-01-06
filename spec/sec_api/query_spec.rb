@@ -914,4 +914,83 @@ RSpec.describe SecApi::Query do
       expect(page2.has_more?).to be false # 100 total, 50+50 fetched
     end
   end
+
+  describe "#auto_paginate (Story 2.6)" do
+    let(:filing_template) do
+      {
+        id: "1",
+        accessionNo: "0001193125-24-001234",
+        ticker: "AAPL",
+        cik: "0000320193",
+        formType: "10-K",
+        filedAt: "2024-01-15",
+        companyName: "Apple Inc",
+        companyNameLong: "Apple Inc.",
+        periodOfReport: "2023-12-31",
+        linkToTxt: "https://example.com",
+        linkToHtml: "https://example.com",
+        linkToXbrl: "https://example.com",
+        linkToFilingDetails: "https://example.com",
+        entities: [],
+        documentFormatFiles: [],
+        dataFiles: []
+      }
+    end
+
+    let(:page1_response) do
+      {
+        filings: Array.new(3) { |i| filing_template.merge(accessionNo: "0001193125-24-00000#{i}") },
+        total: {value: 5, relation: "eq"},
+        from: "0"
+      }
+    end
+
+    let(:page2_response) do
+      {
+        filings: Array.new(2) { |i| filing_template.merge(accessionNo: "0001193125-24-00000#{i + 3}") },
+        total: {value: 5, relation: "eq"},
+        from: "3"
+      }
+    end
+
+    it "executes search and returns lazy enumerator" do
+      stubs.post("/") { [200, json_headers, page1_response.to_json] }
+
+      result = client.query.ticker("AAPL").auto_paginate
+      expect(result).to be_a(Enumerator::Lazy)
+    end
+
+    it "allows chained iteration through all pages" do
+      # Page 1 request
+      stubs.post("/") { [200, json_headers, page1_response.to_json] }
+      # Page 2 request
+      stubs.post("/") { [200, json_headers, page2_response.to_json] }
+
+      all_filings = client.query.ticker("AAPL").auto_paginate.to_a
+      expect(all_filings.size).to eq(5)
+    end
+
+    it "yields Filing objects" do
+      stubs.post("/") { [200, json_headers, page1_response.to_json] }
+
+      client.query.ticker("AAPL").auto_paginate.first.tap do |filing|
+        expect(filing).to be_a(SecApi::Objects::Filing)
+      end
+    end
+
+    it "works with filters: ticker + form_type + date_range" do
+      stubs.post("/") do |env|
+        body = JSON.parse(env.body)
+        expect(body["query"]).to eq('ticker:AAPL AND formType:"10-K" AND filedAt:[2020-01-01 TO 2024-12-31]')
+        [200, json_headers, page1_response.to_json]
+      end
+
+      client.query
+        .ticker("AAPL")
+        .form_type("10-K")
+        .date_range(from: "2020-01-01", to: "2024-12-31")
+        .auto_paginate
+        .first # Trigger execution
+    end
+  end
 end

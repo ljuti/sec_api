@@ -778,4 +778,284 @@ RSpec.describe SecApi::Collections::Filings do
       expect(collection.next_cursor).to eq(10)
     end
   end
+
+  describe "#auto_paginate" do
+    let(:filing_template) do
+      {
+        id: "1",
+        accessionNo: "0001193125-24-001234",
+        ticker: "AAPL",
+        cik: "0000320193",
+        formType: "10-K",
+        filedAt: "2024-01-15",
+        companyName: "Apple Inc",
+        companyNameLong: "Apple Inc.",
+        periodOfReport: "2023-12-31",
+        linkToTxt: "https://example.com",
+        linkToHtml: "https://example.com",
+        linkToXbrl: "https://example.com",
+        linkToFilingDetails: "https://example.com",
+        entities: [],
+        documentFormatFiles: [],
+        dataFiles: []
+      }
+    end
+
+    let(:stubs) { Faraday::Adapter::Test::Stubs.new }
+    let(:connection) do
+      Faraday.new do |builder|
+        builder.request :json
+        builder.response :json, parser_options: {symbolize_names: true}
+        builder.adapter :test, stubs
+      end
+    end
+    let(:mock_client) do
+      client = instance_double("SecApi::Client")
+      allow(client).to receive(:connection).and_return(connection)
+      client
+    end
+    let(:query_context) do
+      {query: "ticker:AAPL", size: "50", sort: [{"filedAt" => {"order" => "desc"}}]}
+    end
+
+    after { stubs.verify_stubbed_calls }
+
+    context "with multiple pages" do
+      let(:page1_data) do
+        {
+          filings: Array.new(3) { |i| filing_template.merge(accessionNo: "0001193125-24-00000#{i}") },
+          total: {value: 5, relation: "eq"},
+          from: "0"
+        }
+      end
+
+      let(:page2_data) do
+        {
+          filings: Array.new(2) { |i| filing_template.merge(accessionNo: "0001193125-24-00000#{i + 3}") },
+          total: {value: 5, relation: "eq"},
+          from: "3"
+        }
+      end
+
+      let(:collection) do
+        described_class.new(page1_data, client: mock_client, query_context: query_context)
+      end
+
+      it "returns an Enumerator::Lazy" do
+        expect(collection.auto_paginate).to be_a(Enumerator::Lazy)
+      end
+
+      it "yields Filing objects (not collections)" do
+        collection.auto_paginate.first.tap do |filing|
+          expect(filing).to be_a(SecApi::Objects::Filing)
+        end
+      end
+
+      it "transparently fetches next page at page boundary" do
+        stubs.post("/") { [200, {"Content-Type" => "application/json"}, page2_data.to_json] }
+        all_filings = collection.auto_paginate.to_a
+        expect(all_filings.size).to eq(5)
+      end
+
+      it "collects all filings with to_a across pages" do
+        stubs.post("/") { [200, {"Content-Type" => "application/json"}, page2_data.to_json] }
+        all_accession_numbers = collection.auto_paginate.map(&:accession_number).to_a
+        expect(all_accession_numbers).to eq([
+          "0001193125-24-000000",
+          "0001193125-24-000001",
+          "0001193125-24-000002",
+          "0001193125-24-000003",
+          "0001193125-24-000004"
+        ])
+      end
+
+      it "stops when has_more? returns false" do
+        stubs.post("/") { [200, {"Content-Type" => "application/json"}, page2_data.to_json] }
+        count = 0
+        collection.auto_paginate.each { count += 1 }
+        expect(count).to eq(5)
+      end
+    end
+
+    context "without client reference" do
+      let(:data) do
+        {
+          filings: [filing_template],
+          total: {value: 100, relation: "eq"},
+          from: "0"
+        }
+      end
+
+      let(:collection) { described_class.new(data) }
+
+      it "raises PaginationError" do
+        expect { collection.auto_paginate }.to raise_error(
+          SecApi::PaginationError,
+          "Cannot paginate without client reference"
+        )
+      end
+    end
+
+    context "with single page result" do
+      let(:data) do
+        {
+          filings: Array.new(10) { |i| filing_template.merge(accessionNo: "0001193125-24-00000#{i}") },
+          total: {value: 10, relation: "eq"},
+          from: "0"
+        }
+      end
+
+      let(:collection) do
+        described_class.new(data, client: mock_client, query_context: query_context)
+      end
+
+      it "yields all filings without additional fetch" do
+        all_filings = collection.auto_paginate.to_a
+        expect(all_filings.size).to eq(10)
+        # No stubs needed - no additional API calls should be made
+      end
+    end
+
+    context "with empty result set" do
+      let(:data) do
+        {
+          filings: [],
+          total: {value: 0, relation: "eq"},
+          from: "0"
+        }
+      end
+
+      let(:collection) do
+        described_class.new(data, client: mock_client, query_context: query_context)
+      end
+
+      it "yields nothing" do
+        expect(collection.auto_paginate.to_a).to be_empty
+      end
+    end
+
+    context "defensive guard against API misbehavior" do
+      # Scenario: API returns empty page mid-pagination but claims more exist
+      # This could cause infinite loop without defensive guard
+      let(:page1_data) do
+        {
+          filings: Array.new(3) { |i| filing_template.merge(accessionNo: "0001193125-24-00000#{i}") },
+          total: {value: 100, relation: "eq"}, # Claims 100 total
+          from: "0"
+        }
+      end
+
+      let(:empty_page_data) do
+        {
+          filings: [], # Empty - API misbehavior
+          total: {value: 100, relation: "eq"}, # Still claims 100 total
+          from: "3" # Same offset as calculated next_cursor
+        }
+      end
+
+      let(:collection) do
+        described_class.new(page1_data, client: mock_client, query_context: query_context)
+      end
+
+      it "breaks loop when API returns empty page with same cursor (infinite loop guard)" do
+        stubs.post("/") { [200, {"Content-Type" => "application/json"}, empty_page_data.to_json] }
+
+        # Should NOT infinite loop - should return only page 1 filings
+        all_filings = collection.auto_paginate.to_a
+        expect(all_filings.size).to eq(3) # Only page 1
+      end
+    end
+
+    context "lazy evaluation" do
+      let(:page1_data) do
+        {
+          filings: Array.new(50) { |i| filing_template.merge(accessionNo: "0001193125-24-#{format("%06d", i)}") },
+          total: {value: 200, relation: "eq"},
+          from: "0"
+        }
+      end
+
+      let(:collection) do
+        described_class.new(page1_data, client: mock_client, query_context: query_context)
+      end
+
+      it "does not fetch next page until needed" do
+        # Take only from first page - should NOT trigger page 2 fetch
+        first_10 = collection.auto_paginate.take(10).to_a
+        expect(first_10.size).to eq(10)
+        # stubs.verify_stubbed_calls would fail if we had stubbed a second page
+        # Since we didn't stub anything, this verifies no API call was made
+      end
+    end
+
+    context "retry behavior (Task 3)" do
+      let(:retry_stubs) { Faraday::Adapter::Test::Stubs.new }
+      let(:retry_connection) do
+        Faraday.new do |builder|
+          builder.request :json
+          builder.response :json, parser_options: {symbolize_names: true}
+          # Add retry middleware to test transient error recovery
+          builder.request :retry, {
+            max: 2,
+            interval: 0.01,
+            retry_statuses: [503],
+            methods: [:post]
+          }
+          builder.adapter :test, retry_stubs
+        end
+      end
+      let(:retry_mock_client) do
+        client = instance_double("SecApi::Client")
+        allow(client).to receive(:connection).and_return(retry_connection)
+        client
+      end
+
+      let(:page1_data) do
+        {
+          filings: Array.new(3) { |i| filing_template.merge(accessionNo: "0001193125-24-00000#{i}") },
+          total: {value: 5, relation: "eq"},
+          from: "0"
+        }
+      end
+
+      let(:page2_data) do
+        {
+          filings: Array.new(2) { |i| filing_template.merge(accessionNo: "0001193125-24-00000#{i + 3}") },
+          total: {value: 5, relation: "eq"},
+          from: "3"
+        }
+      end
+
+      let(:collection) do
+        described_class.new(page1_data, client: retry_mock_client, query_context: query_context)
+      end
+
+      it "retries transient errors (503) during pagination and continues" do
+        # Page 2 fails with 503 on first attempt, then succeeds on retry
+        call_count = 0
+        retry_stubs.post("/") do |_env|
+          call_count += 1
+          if call_count == 1
+            [503, {}, "Service Unavailable"]
+          else
+            [200, {"Content-Type" => "application/json"}, page2_data.to_json]
+          end
+        end
+
+        all_filings = collection.auto_paginate.to_a
+
+        expect(all_filings.size).to eq(5)
+        expect(call_count).to eq(2) # First failed, second succeeded
+      end
+
+      it "pagination continues through fetch_next_page which uses client connection" do
+        # This verifies that auto_paginate uses fetch_next_page which goes through
+        # the client's connection, where retry middleware is applied
+        retry_stubs.post("/") { [200, {"Content-Type" => "application/json"}, page2_data.to_json] }
+
+        all_filings = collection.auto_paginate.to_a
+        expect(all_filings.size).to eq(5)
+      end
+    end
+  end
 end

@@ -128,6 +128,66 @@ module SecApi
         @next_cursor < extract_total_value
       end
 
+      # Returns a lazy enumerator that automatically paginates through all results.
+      #
+      # Each iteration yields a single {Filing} object. Pages are fetched on-demand
+      # as the enumerator is consumed, keeping memory usage constant regardless of
+      # total result count. Only the current page is held in memory; previous pages
+      # become eligible for garbage collection as iteration proceeds.
+      #
+      # @return [Enumerator::Lazy] lazy enumerator yielding Filing objects
+      # @raise [PaginationError] when no client reference available for pagination
+      #
+      # @example Backfill with early termination
+      #   client.query
+      #     .ticker("AAPL")
+      #     .date_range(from: 5.years.ago, to: Date.today)
+      #     .search
+      #     .auto_paginate
+      #     .each { |f| process(f) }
+      #
+      # @example Collect all results (use cautiously with large datasets)
+      #   all_filings = filings.auto_paginate.to_a
+      #
+      # @example With filtering (Enumerable methods work with lazy enumerator)
+      #   filings.auto_paginate
+      #     .select { |f| f.form_type == "10-K" }
+      #     .take(100)
+      #     .each { |f| process(f) }
+      #
+      # @note Memory Efficiency: Only the current page is held in memory. Previous
+      #   pages become eligible for garbage collection as iteration proceeds.
+      #
+      # @note Retry Behavior: Transient errors (503, timeouts) during page fetches
+      #   are automatically retried by the middleware. Permanent errors (401, 404)
+      #   will be raised to the caller.
+      #
+      # @see Query#auto_paginate Convenience method for chained queries
+      def auto_paginate
+        raise PaginationError, "Cannot paginate without client reference" if @_client.nil?
+
+        Enumerator.new do |yielder|
+          current_page = self
+
+          loop do
+            # Yield each filing from current page
+            current_page.each { |filing| yielder << filing }
+
+            # Stop if no more pages
+            break unless current_page.has_more?
+
+            # Fetch next page (becomes new current, old page eligible for GC)
+            next_page = current_page.fetch_next_page
+
+            # Guard against infinite loop if API returns empty page mid-pagination
+            # (defensive coding against API misbehavior)
+            break if next_page.to_a.empty? && current_page.next_cursor == next_page.next_cursor
+
+            current_page = next_page
+          end
+        end.lazy
+      end
+
       # Fetch the next page of results.
       #
       # Makes an API request using the stored query context with the next

@@ -205,6 +205,32 @@ module SecApi
       self
     end
 
+    # Executes the query and returns a lazy enumerator for automatic pagination.
+    #
+    # Convenience method that chains {#search} with {Filings#auto_paginate}.
+    # Useful for backfill operations where you want to process all matching
+    # filings across multiple pages.
+    #
+    # @return [Enumerator::Lazy] lazy enumerator yielding Filing objects
+    # @raise [PaginationError] when pagination state is invalid
+    # @raise [AuthenticationError] when API key is invalid (from search)
+    # @raise [RateLimitError] when rate limit exceeded (from search)
+    # @raise [NetworkError] when connection fails (from search)
+    # @raise [ServerError] when API returns 5xx error (from search)
+    #
+    # @example Multi-year backfill
+    #   client.query
+    #     .ticker("AAPL")
+    #     .form_type("10-K", "10-Q")
+    #     .date_range(from: 5.years.ago, to: Date.today)
+    #     .auto_paginate
+    #     .each { |filing| ingest(filing) }
+    #
+    # @see Collections::Filings#auto_paginate
+    def auto_paginate
+      search.auto_paginate
+    end
+
     # Execute the query and return filings.
     #
     # This is the terminal method that builds the Lucene query from accumulated
