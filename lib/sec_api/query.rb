@@ -44,7 +44,37 @@ module SecApi
   #     .limit(20)
   #     .search
   #
+  # @example Query international filings (Form 20-F - foreign annual reports)
+  #   client.query.ticker("NMR").form_type("20-F").search
+  #
+  # @example Query Canadian filings (Form 40-F - Canadian annual reports under MJDS)
+  #   client.query.ticker("ABX").form_type("40-F").search
+  #
+  # @example Query foreign current reports (Form 6-K)
+  #   client.query.ticker("NMR").form_type("6-K").search
+  #
+  # @example Mix domestic and international forms
+  #   client.query.form_type("10-K", "20-F", "40-F").search
+  #
+  # @note International forms (20-F, 40-F, 6-K) are supported as first-class citizens.
+  #   No special handling required - they work identically to domestic forms (10-K, 10-Q, 8-K).
+  #
   class Query
+    # Common domestic SEC form types for reference.
+    # @return [Array<String>] list of common domestic form types
+    # @note This is not an exhaustive list. The API accepts any form type string.
+    DOMESTIC_FORM_TYPES = %w[10-K 10-Q 8-K S-1 S-3 4 13F DEF\ 14A].freeze
+
+    # International SEC form types for foreign private issuers.
+    # @return [Array<String>] list of international form types
+    # @see https://www.sec.gov/divisions/corpfin/internatl/foreign-private-issuers-overview.shtml
+    INTERNATIONAL_FORM_TYPES = %w[20-F 40-F 6-K].freeze
+
+    # Combined list of common domestic and international form types.
+    # @return [Array<String>] list of all common form types
+    # @note This is not an exhaustive list. The API accepts any form type string.
+    ALL_FORM_TYPES = (DOMESTIC_FORM_TYPES + INTERNATIONAL_FORM_TYPES).freeze
+
     def initialize(client)
       @_client = client
       @query_parts = []
@@ -100,6 +130,9 @@ module SecApi
 
     # Filter filings by form type(s).
     #
+    # Supports both domestic and international SEC form types. International forms
+    # (20-F, 40-F, 6-K) are treated as first-class citizens - no special handling required.
+    #
     # @param types [Array<String>] One or more form types to filter by
     # @return [self] Returns self for method chaining
     #
@@ -109,7 +142,17 @@ module SecApi
     # @example Multiple form types
     #   query.form_type("10-K", "10-Q")  #=> Lucene: 'formType:("10-K" OR "10-Q")'
     #
+    # @example International form types
+    #   query.form_type("20-F")    # Foreign private issuer annual reports
+    #   query.form_type("40-F")    # Canadian issuer annual reports (MJDS)
+    #   query.form_type("6-K")     # Foreign private issuer current reports
+    #
+    # @example Mixed domestic and international
+    #   query.form_type("10-K", "20-F", "40-F")  # All annual reports
+    #   query.form_type("8-K", "6-K")            # All current reports
+    #
     # @note Form types are case-sensitive. "10-K" and "10-k" are different.
+    # @note International forms work identically to domestic forms - no special API handling.
     # @raise [ArgumentError] when no form types are provided
     #
     def form_type(*types)

@@ -47,7 +47,20 @@ module SecApi
       attribute :company_name_long, Types::String
 
       # @!attribute [r] form_type
-      #   @return [String] SEC form type (e.g., "10-K", "10-Q", "8-K")
+      #   @return [String] SEC form type. Includes both domestic forms (10-K, 10-Q, 8-K, etc.)
+      #     and international forms (20-F, 40-F, 6-K for foreign private issuers).
+      #   @note Filing objects handle all form types uniformly - no special handling for
+      #     international forms. The same structure applies to domestic and foreign filings.
+      #   @see SecApi::Query::INTERNATIONAL_FORM_TYPES
+      #   @see SecApi::Query::DOMESTIC_FORM_TYPES
+      #   @example Domestic filing
+      #     filing.form_type  #=> "10-K"
+      #   @example Foreign private issuer annual report
+      #     filing.form_type  #=> "20-F"
+      #   @example Canadian issuer annual report (MJDS)
+      #     filing.form_type  #=> "40-F"
+      #   @example Foreign current report
+      #     filing.form_type  #=> "6-K"
       attribute :form_type, Types::String
 
       # @!attribute [r] period_of_report
