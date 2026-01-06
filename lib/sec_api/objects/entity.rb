@@ -18,6 +18,7 @@ module SecApi
       attribute? :sic, Types::String.optional
       attribute? :ticker, Types::String.optional
       attribute? :exchange, Types::String.optional
+      attribute? :cusip, Types::String.optional
 
       # Override constructor to ensure immutability
       def initialize(attributes)
@@ -39,7 +40,8 @@ module SecApi
           film_number: data[:film_number] || data[:filmNo] || data["film_number"] || data["filmNo"],
           sic: data[:sic] || data["sic"],
           ticker: data[:ticker] || data["ticker"],
-          exchange: data[:exchange] || data["exchange"]
+          exchange: data[:exchange] || data["exchange"],
+          cusip: data[:cusip] || data["cusip"]
         }
 
         new(normalized)

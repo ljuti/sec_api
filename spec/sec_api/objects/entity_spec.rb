@@ -23,7 +23,8 @@ RSpec.describe SecApi::Objects::Entity do
         act: "34",
         file_number: "001-36743",
         film_number: "24123456",
-        sic: "3571"
+        sic: "3571",
+        cusip: "037833100"
       )
     end
 
@@ -48,6 +49,7 @@ RSpec.describe SecApi::Objects::Entity do
       expect(entity.file_number).to eq("001-36743")
       expect(entity.film_number).to eq("24123456")
       expect(entity.sic).to eq("3571")
+      expect(entity.cusip).to eq("037833100")
     end
 
     it "allows nil for optional attributes" do
@@ -57,6 +59,7 @@ RSpec.describe SecApi::Objects::Entity do
       expect(minimal_entity.name).to be_nil
       expect(minimal_entity.ticker).to be_nil
       expect(minimal_entity.exchange).to be_nil
+      expect(minimal_entity.cusip).to be_nil
     end
 
     it "requires cik attribute" do
@@ -98,6 +101,18 @@ RSpec.describe SecApi::Objects::Entity do
         expect(entity.exchange).to eq("NASDAQ")
       end
 
+      it "extracts cusip from API response" do
+        data = {
+          cik: "0000320193",
+          ticker: "AAPL",
+          cusip: "037833100"
+        }
+
+        entity = described_class.from_api(data)
+
+        expect(entity.cusip).to eq("037833100")
+      end
+
       it "normalizes camelCase API fields to snake_case" do
         data = {
           cik: "0000320193",
@@ -133,6 +148,17 @@ RSpec.describe SecApi::Objects::Entity do
         expect(entity.cik).to eq("0000320193")
         expect(entity.ticker).to eq("AAPL")
         expect(entity.name).to eq("Apple Inc.")
+      end
+
+      it "extracts cusip from string-keyed response" do
+        data = {
+          "cik" => "0000320193",
+          "cusip" => "037833100"
+        }
+
+        entity = described_class.from_api(data)
+
+        expect(entity.cusip).to eq("037833100")
       end
     end
 

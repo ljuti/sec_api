@@ -242,6 +242,7 @@ RSpec.describe SecApi::Mapping do
 
       expect(entity).to be_a(SecApi::Objects::Entity)
       expect(entity.cik).to eq("0000320193")
+      expect(entity.cusip).to be_nil # cusip not in API response
       stubs.verify_stubbed_calls
     end
 
@@ -265,6 +266,60 @@ RSpec.describe SecApi::Mapping do
       expect(entity.exchange).to eq("NASDAQ")
       stubs.verify_stubbed_calls
     end
+
+    it "returns Entity with cusip attribute populated" do
+      stubs = Faraday::Adapter::Test::Stubs.new
+      stubs.get("/mapping/cusip/037833100") do
+        [200, {"Content-Type" => "application/json"}, {
+          "cik" => "0000320193",
+          "ticker" => "AAPL",
+          "name" => "Apple Inc.",
+          "cusip" => "037833100"
+        }.to_json]
+      end
+      stub_connection(stubs)
+
+      entity = mapping.cusip("037833100")
+
+      expect(entity.cusip).to eq("037833100")
+      stubs.verify_stubbed_calls
+    end
+
+    it "is immutable (frozen)" do
+      stubs = Faraday::Adapter::Test::Stubs.new
+      stubs.get("/mapping/cusip/037833100") do
+        [200, {"Content-Type" => "application/json"}, {
+          "cik" => "0000320193",
+          "ticker" => "AAPL",
+          "cusip" => "037833100"
+        }.to_json]
+      end
+      stub_connection(stubs)
+
+      entity = mapping.cusip("037833100")
+
+      expect(entity).to be_frozen
+      stubs.verify_stubbed_calls
+    end
+
+    it "raises NotFoundError for invalid CUSIP with descriptive message" do
+      stubs = Faraday::Adapter::Test::Stubs.new
+      stubs.get("/mapping/cusip/000000000") do
+        [404, {"Content-Type" => "application/json"}, {"error" => "CUSIP not found"}.to_json]
+      end
+      stub_connection(stubs)
+
+      expect { mapping.cusip("000000000") }.to raise_error(SecApi::NotFoundError) do |error|
+        expect(error.message).to include("not found")
+        expect(error.message).to include("/mapping/cusip/000000000")
+      end
+      stubs.verify_stubbed_calls
+    end
+
+    # NOTE: Edge case - CUSIPs mapping to multiple entities
+    # The sec-api.io API returns the primary/most active entity by default.
+    # Our implementation delegates to the API, so this behavior is inherited.
+    # No additional handling required - API handles entity disambiguation.
   end
 
   describe "#name" do
@@ -343,10 +398,21 @@ RSpec.describe SecApi::Mapping do
       end
     end
 
+    it "raises ValidationError when CUSIP is nil" do
+      expect { mapping.cusip(nil) }.to raise_error(SecApi::ValidationError) do |error|
+        expect(error.message).to include("CUSIP")
+        expect(error.message).to include("required")
+      end
+    end
+
     it "raises ValidationError when CUSIP is empty" do
       expect { mapping.cusip("") }.to raise_error(SecApi::ValidationError) do |error|
         expect(error.message).to include("CUSIP")
       end
+    end
+
+    it "raises ValidationError when CUSIP is whitespace only" do
+      expect { mapping.cusip("   ") }.to raise_error(SecApi::ValidationError)
     end
 
     it "raises ValidationError when name is nil" do
