@@ -361,6 +361,134 @@ RSpec.describe SecApi::Mapping do
       expect(entity.exchange).to eq("NASDAQ")
       stubs.verify_stubbed_calls
     end
+
+    it "is immutable (frozen)" do
+      stubs = Faraday::Adapter::Test::Stubs.new
+      stubs.get("/mapping/name/Apple") do
+        [200, {"Content-Type" => "application/json"}, {
+          "cik" => "0000320193",
+          "ticker" => "AAPL",
+          "name" => "Apple Inc."
+        }.to_json]
+      end
+      stub_connection(stubs)
+
+      entity = mapping.name("Apple")
+
+      expect(entity).to be_frozen
+      stubs.verify_stubbed_calls
+    end
+
+    it "has same structure as Entity from ticker resolution" do
+      stubs = Faraday::Adapter::Test::Stubs.new
+      stubs.get("/mapping/name/Apple") do
+        [200, {"Content-Type" => "application/json"}, {
+          "cik" => "0000320193",
+          "ticker" => "AAPL",
+          "name" => "Apple Inc.",
+          "exchange" => "NASDAQ"
+        }.to_json]
+      end
+      stub_connection(stubs)
+
+      entity = mapping.name("Apple")
+
+      # Verify Entity has all standard attributes accessible
+      expect(entity).to respond_to(:cik)
+      expect(entity).to respond_to(:ticker)
+      expect(entity).to respond_to(:name)
+      expect(entity).to respond_to(:exchange)
+      expect(entity).to respond_to(:cusip)
+      stubs.verify_stubbed_calls
+    end
+
+    # NOTE: Fuzzy matching behavior
+    # The sec-api.io API performs fuzzy/partial matching server-side.
+    # Partial names like "Apple" return the best matching entity ("Apple Inc.").
+    # No client-side normalization is required - the API handles matching.
+    context "fuzzy matching (API behavior)" do
+      it "returns full entity name when given partial name" do
+        stubs = Faraday::Adapter::Test::Stubs.new
+        stubs.get("/mapping/name/Apple") do
+          [200, {"Content-Type" => "application/json"}, {
+            "cik" => "0000320193",
+            "ticker" => "AAPL",
+            "name" => "Apple Inc."
+          }.to_json]
+        end
+        stub_connection(stubs)
+
+        # Partial name input
+        entity = mapping.name("Apple")
+
+        # API returns full matched entity name
+        expect(entity.name).to eq("Apple Inc.")
+        expect(entity.cik).to eq("0000320193")
+        expect(entity.ticker).to eq("AAPL")
+        stubs.verify_stubbed_calls
+      end
+
+      it "handles case-insensitive matching (API feature)" do
+        stubs = Faraday::Adapter::Test::Stubs.new
+        # Input is lowercase, API matches case-insensitively
+        stubs.get("/mapping/name/microsoft") do
+          [200, {"Content-Type" => "application/json"}, {
+            "cik" => "0000789019",
+            "ticker" => "MSFT",
+            "name" => "Microsoft Corporation"
+          }.to_json]
+        end
+        stub_connection(stubs)
+
+        entity = mapping.name("microsoft")
+
+        expect(entity.name).to eq("Microsoft Corporation")
+        expect(entity.ticker).to eq("MSFT")
+        stubs.verify_stubbed_calls
+      end
+    end
+
+    it "raises NotFoundError for unknown company name" do
+      stubs = Faraday::Adapter::Test::Stubs.new
+      stubs.get("/mapping/name/Nonexistent+Company+XYZ") do
+        [404, {"Content-Type" => "application/json"}, {"error" => "Company not found"}.to_json]
+      end
+      stub_connection(stubs)
+
+      expect { mapping.name("Nonexistent Company XYZ") }.to raise_error(SecApi::NotFoundError) do |error|
+        expect(error.message).to include("not found")
+        expect(error.message).to include("/mapping/name/")
+      end
+      stubs.verify_stubbed_calls
+    end
+
+    # NOTE: Disambiguation behavior
+    # When multiple companies have similar names, the sec-api.io API
+    # returns the most relevant/largest entity by default.
+    # Example: "Meta" returns Meta Platforms Inc. (formerly Facebook)
+    # No client-side disambiguation logic is needed - the API handles it.
+    context "disambiguation (API behavior)" do
+      it "returns most relevant entity for ambiguous names" do
+        stubs = Faraday::Adapter::Test::Stubs.new
+        # "Meta" could match multiple entities, API returns the primary one
+        stubs.get("/mapping/name/Meta") do
+          [200, {"Content-Type" => "application/json"}, {
+            "cik" => "0001326801",
+            "ticker" => "META",
+            "name" => "Meta Platforms, Inc."
+          }.to_json]
+        end
+        stub_connection(stubs)
+
+        entity = mapping.name("Meta")
+
+        # API disambiguates and returns the most relevant (largest) match
+        expect(entity.name).to eq("Meta Platforms, Inc.")
+        expect(entity.ticker).to eq("META")
+        expect(entity.cik).to eq("0001326801")
+        stubs.verify_stubbed_calls
+      end
+    end
   end
 
   describe "error handling through middleware" do
@@ -419,6 +547,17 @@ RSpec.describe SecApi::Mapping do
       expect { mapping.name(nil) }.to raise_error(SecApi::ValidationError) do |error|
         expect(error.message).to include("name")
       end
+    end
+
+    it "raises ValidationError when name is empty string" do
+      expect { mapping.name("") }.to raise_error(SecApi::ValidationError) do |error|
+        expect(error.message).to include("name")
+        expect(error.message).to include("required")
+      end
+    end
+
+    it "raises ValidationError when name is whitespace only" do
+      expect { mapping.name("   ") }.to raise_error(SecApi::ValidationError)
     end
   end
 
