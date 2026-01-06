@@ -250,4 +250,116 @@ RSpec.describe SecApi::Mapping do
       stubs.verify_stubbed_calls
     end
   end
+
+  describe "input validation" do
+    it "raises ValidationError when ticker is nil" do
+      expect { mapping.ticker(nil) }.to raise_error(SecApi::ValidationError) do |error|
+        expect(error.message).to include("ticker")
+        expect(error.message).to include("required")
+      end
+    end
+
+    it "raises ValidationError when ticker is empty string" do
+      expect { mapping.ticker("") }.to raise_error(SecApi::ValidationError)
+    end
+
+    it "raises ValidationError when ticker is whitespace only" do
+      expect { mapping.ticker("   ") }.to raise_error(SecApi::ValidationError)
+    end
+
+    it "raises ValidationError when CIK is nil" do
+      expect { mapping.cik(nil) }.to raise_error(SecApi::ValidationError) do |error|
+        expect(error.message).to include("CIK")
+      end
+    end
+
+    it "raises ValidationError when CUSIP is empty" do
+      expect { mapping.cusip("") }.to raise_error(SecApi::ValidationError) do |error|
+        expect(error.message).to include("CUSIP")
+      end
+    end
+
+    it "raises ValidationError when name is nil" do
+      expect { mapping.name(nil) }.to raise_error(SecApi::ValidationError) do |error|
+        expect(error.message).to include("name")
+      end
+    end
+  end
+
+  describe "URL encoding" do
+    it "encodes ticker with dot (BRK.A)" do
+      stubs = Faraday::Adapter::Test::Stubs.new
+      stubs.get("/mapping/ticker/BRK.A") do
+        [200, {"Content-Type" => "application/json"}, {
+          "cik" => "0001067983",
+          "ticker" => "BRK.A",
+          "name" => "Berkshire Hathaway Inc."
+        }.to_json]
+      end
+
+      allow(client).to receive(:connection).and_return(
+        Faraday.new do |conn|
+          conn.request :json
+          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
+          conn.use SecApi::Middleware::ErrorHandler
+          conn.adapter :test, stubs
+        end
+      )
+
+      entity = mapping.ticker("BRK.A")
+
+      expect(entity.ticker).to eq("BRK.A")
+      stubs.verify_stubbed_calls
+    end
+
+    it "encodes company name with spaces" do
+      stubs = Faraday::Adapter::Test::Stubs.new
+      stubs.get("/mapping/name/Apple+Inc") do
+        [200, {"Content-Type" => "application/json"}, {
+          "cik" => "0000320193",
+          "ticker" => "AAPL",
+          "name" => "Apple Inc."
+        }.to_json]
+      end
+
+      allow(client).to receive(:connection).and_return(
+        Faraday.new do |conn|
+          conn.request :json
+          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
+          conn.use SecApi::Middleware::ErrorHandler
+          conn.adapter :test, stubs
+        end
+      )
+
+      entity = mapping.name("Apple Inc")
+
+      expect(entity.name).to eq("Apple Inc.")
+      stubs.verify_stubbed_calls
+    end
+
+    it "encodes special characters in identifiers" do
+      stubs = Faraday::Adapter::Test::Stubs.new
+      stubs.get("/mapping/name/AT%26T") do
+        [200, {"Content-Type" => "application/json"}, {
+          "cik" => "0000732717",
+          "ticker" => "T",
+          "name" => "AT&T Inc."
+        }.to_json]
+      end
+
+      allow(client).to receive(:connection).and_return(
+        Faraday.new do |conn|
+          conn.request :json
+          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
+          conn.use SecApi::Middleware::ErrorHandler
+          conn.adapter :test, stubs
+        end
+      )
+
+      entity = mapping.name("AT&T")
+
+      expect(entity.name).to eq("AT&T Inc.")
+      stubs.verify_stubbed_calls
+    end
+  end
 end

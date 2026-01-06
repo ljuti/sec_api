@@ -1,3 +1,5 @@
+require "uri"
+
 module SecApi
   # Mapping proxy for entity resolution endpoints
   #
@@ -16,13 +18,15 @@ module SecApi
 
     # Resolve ticker symbol to company entity
     #
-    # @param ticker [String] The stock ticker symbol (e.g., "AAPL")
+    # @param ticker [String] The stock ticker symbol (e.g., "AAPL", "BRK.A")
     # @return [Entity] Immutable entity object with CIK, ticker, name, etc.
+    # @raise [ValidationError] when ticker is nil or empty
     # @raise [AuthenticationError] when API key is invalid
     # @raise [NotFoundError] when ticker is not found
     # @raise [NetworkError] when connection fails
     def ticker(ticker)
-      response = @_client.connection.get("/mapping/ticker/#{ticker}")
+      validate_identifier!(ticker, "ticker")
+      response = @_client.connection.get("/mapping/ticker/#{encode_path(ticker)}")
       Objects::Entity.from_api(response.body)
     end
 
@@ -30,11 +34,13 @@ module SecApi
     #
     # @param cik [String] The CIK number (e.g., "0000320193")
     # @return [Entity] Immutable entity object with CIK, ticker, name, etc.
+    # @raise [ValidationError] when CIK is nil or empty
     # @raise [AuthenticationError] when API key is invalid
     # @raise [NotFoundError] when CIK is not found
     # @raise [NetworkError] when connection fails
     def cik(cik)
-      response = @_client.connection.get("/mapping/cik/#{cik}")
+      validate_identifier!(cik, "CIK")
+      response = @_client.connection.get("/mapping/cik/#{encode_path(cik)}")
       Objects::Entity.from_api(response.body)
     end
 
@@ -42,11 +48,13 @@ module SecApi
     #
     # @param cusip [String] The CUSIP identifier (e.g., "037833100")
     # @return [Entity] Immutable entity object with CIK, ticker, name, etc.
+    # @raise [ValidationError] when CUSIP is nil or empty
     # @raise [AuthenticationError] when API key is invalid
     # @raise [NotFoundError] when CUSIP is not found
     # @raise [NetworkError] when connection fails
     def cusip(cusip)
-      response = @_client.connection.get("/mapping/cusip/#{cusip}")
+      validate_identifier!(cusip, "CUSIP")
+      response = @_client.connection.get("/mapping/cusip/#{encode_path(cusip)}")
       Objects::Entity.from_api(response.body)
     end
 
@@ -54,12 +62,36 @@ module SecApi
     #
     # @param name [String] The company name or partial name (e.g., "Apple")
     # @return [Entity] Immutable entity object with CIK, ticker, name, etc.
+    # @raise [ValidationError] when name is nil or empty
     # @raise [AuthenticationError] when API key is invalid
     # @raise [NotFoundError] when name is not found
     # @raise [NetworkError] when connection fails
     def name(name)
-      response = @_client.connection.get("/mapping/name/#{name}")
+      validate_identifier!(name, "name")
+      response = @_client.connection.get("/mapping/name/#{encode_path(name)}")
       Objects::Entity.from_api(response.body)
+    end
+
+    private
+
+    # Validates that identifier is present and non-empty
+    # @param value [String, nil] The identifier value to validate
+    # @param field_name [String] Human-readable field name for error message
+    # @raise [ValidationError] when value is nil or empty
+    def validate_identifier!(value, field_name)
+      if value.nil? || value.to_s.strip.empty?
+        raise ValidationError,
+          "#{field_name} is required and cannot be empty. " \
+          "Provide a valid #{field_name} identifier."
+      end
+    end
+
+    # URL-encodes path segment for safe HTTP requests
+    # Handles special characters like dots (BRK.A) and slashes
+    # @param value [String] The path segment to encode
+    # @return [String] URL-encoded path segment
+    def encode_path(value)
+      URI.encode_www_form_component(value.to_s)
     end
   end
 end
