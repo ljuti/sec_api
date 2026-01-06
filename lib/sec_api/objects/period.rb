@@ -56,15 +56,41 @@ module SecApi
     #   Period.from_api({"instant" => "2023-09-30"})
     #
     def self.from_api(data)
+      # Defensive nil check for direct calls (Fact.from_api validates period presence)
       return nil if data.nil?
 
-      normalized = {
-        start_date: data[:startDate] || data["startDate"] || data[:start_date] || data["start_date"],
-        end_date: data[:endDate] || data["endDate"] || data[:end_date] || data["end_date"],
-        instant: data[:instant] || data["instant"]
-      }
+      start_date = data[:startDate] || data["startDate"] || data[:start_date] || data["start_date"]
+      end_date = data[:endDate] || data["endDate"] || data[:end_date] || data["end_date"]
+      instant = data[:instant] || data["instant"]
 
-      new(normalized)
+      validate_structure!(instant, start_date, end_date, data)
+
+      new(
+        start_date: start_date,
+        end_date: end_date,
+        instant: instant
+      )
     end
+
+    # Validates that period has either instant OR (start_date AND end_date).
+    #
+    # @param instant [String, nil] Instant date value
+    # @param start_date [String, nil] Start date value
+    # @param end_date [String, nil] End date value
+    # @param data [Hash] Original data for error message
+    # @raise [ValidationError] when period structure is invalid
+    #
+    def self.validate_structure!(instant, start_date, end_date, data)
+      has_instant = !instant.nil?
+      has_duration = !start_date.nil? && !end_date.nil?
+
+      return if has_instant || has_duration
+
+      raise ValidationError, "XBRL period has invalid structure. " \
+        "Expected 'instant' or 'startDate'/'endDate'. " \
+        "Received: #{data.inspect}"
+    end
+
+    private_class_method :validate_structure!
   end
 end

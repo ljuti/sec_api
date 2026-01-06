@@ -230,15 +230,15 @@ RSpec.describe SecApi::Fact do
       expect(fact.unit_ref).to eq("usd")
     end
 
-    it "handles missing optional fields" do
-      api_data = {"value" => "1000"}
+    it "handles missing optional fields (except period which is required)" do
+      api_data = {"value" => "1000", "period" => {"instant" => "2023-09-30"}}
 
       fact = described_class.from_api(api_data)
 
       expect(fact.value).to eq("1000")
       expect(fact.decimals).to be_nil
       expect(fact.unit_ref).to be_nil
-      expect(fact.period).to be_nil
+      expect(fact.period).not_to be_nil
     end
 
     it "raises ValidationError when value is nil" do
@@ -255,6 +255,42 @@ RSpec.describe SecApi::Fact do
       expect {
         described_class.from_api(api_data)
       }.to raise_error(SecApi::ValidationError, /missing required 'value' field/)
+    end
+
+    context "period validation (AC#3, AC#4)" do
+      it "raises ValidationError when period is nil" do
+        api_data = {"value" => "1000", "period" => nil}
+
+        expect {
+          described_class.from_api(api_data)
+        }.to raise_error(SecApi::ValidationError, /missing required 'period' field/)
+      end
+
+      it "raises ValidationError when period key is missing entirely" do
+        api_data = {"value" => "1000", "decimals" => "-6", "unitRef" => "usd"}
+
+        expect {
+          described_class.from_api(api_data)
+        }.to raise_error(SecApi::ValidationError, /missing required 'period' field/)
+      end
+
+      it "includes received data in error message" do
+        api_data = {"value" => "1000"}
+
+        expect {
+          described_class.from_api(api_data)
+        }.to raise_error(SecApi::ValidationError, /Received: \{.*value.*1000/)
+      end
+
+      it "passes validation with valid instant period" do
+        api_data = {"value" => "1000", "period" => {"instant" => "2023-09-30"}}
+        expect { described_class.from_api(api_data) }.not_to raise_error
+      end
+
+      it "passes validation with valid duration period" do
+        api_data = {"value" => "1000", "period" => {"startDate" => "2023-01-01", "endDate" => "2023-12-31"}}
+        expect { described_class.from_api(api_data) }.not_to raise_error
+      end
     end
   end
 end
@@ -356,6 +392,73 @@ RSpec.describe SecApi::Period do
 
       expect(period.start_date).to eq(Date.new(2023, 1, 1))
       expect(period.end_date).to eq(Date.new(2023, 12, 31))
+    end
+
+    context "structure validation (AC#4)" do
+      it "raises ValidationError when period has neither instant nor duration" do
+        api_data = {}
+
+        expect {
+          described_class.from_api(api_data)
+        }.to raise_error(
+          SecApi::ValidationError,
+          /XBRL period has invalid structure/
+        )
+      end
+
+      it "raises ValidationError when period has only start_date (missing end_date)" do
+        api_data = {"startDate" => "2023-01-01"}
+
+        expect {
+          described_class.from_api(api_data)
+        }.to raise_error(
+          SecApi::ValidationError,
+          /Expected 'instant' or 'startDate'\/'endDate'/
+        )
+      end
+
+      it "raises ValidationError when period has only end_date (missing start_date)" do
+        api_data = {"endDate" => "2023-12-31"}
+
+        expect {
+          described_class.from_api(api_data)
+        }.to raise_error(
+          SecApi::ValidationError,
+          /Expected 'instant' or 'startDate'\/'endDate'/
+        )
+      end
+
+      it "includes received data in error message" do
+        api_data = {"startDate" => "2023-01-01"}
+
+        expect {
+          described_class.from_api(api_data)
+        }.to raise_error(SecApi::ValidationError, /Received: \{/)
+      end
+
+      it "passes validation with valid instant period" do
+        api_data = {"instant" => "2023-09-30"}
+        expect { described_class.from_api(api_data) }.not_to raise_error
+      end
+
+      it "passes validation with valid duration period" do
+        api_data = {"startDate" => "2023-01-01", "endDate" => "2023-12-31"}
+        expect { described_class.from_api(api_data) }.not_to raise_error
+      end
+
+      it "raises Dry::Types::CoercionError for invalid date format" do
+        api_data = {"instant" => "not-a-valid-date"}
+
+        expect {
+          described_class.from_api(api_data)
+        }.to raise_error(Dry::Types::CoercionError)
+      end
+    end
+
+    context "defensive nil handling" do
+      it "returns nil when called with nil directly" do
+        expect(described_class.from_api(nil)).to be_nil
+      end
     end
   end
 end

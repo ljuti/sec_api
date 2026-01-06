@@ -125,13 +125,19 @@ module SecApi
       end
 
       period_data = data[:period] || data["period"]
+
+      if period_data.nil?
+        raise ValidationError, "XBRL fact missing required 'period' field. " \
+          "Received: #{data.inspect}"
+      end
+
       segment_data = data[:segment] || data["segment"]
 
       normalized = {
         value: raw_value.to_s,
         decimals: data[:decimals] || data["decimals"],
         unit_ref: data[:unitRef] || data["unitRef"] || data[:unit_ref] || data["unit_ref"],
-        period: period_data ? Period.from_api(period_data) : nil,
+        period: Period.from_api(period_data),
         segment: segment_data
       }
 

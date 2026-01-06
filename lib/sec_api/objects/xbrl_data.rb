@@ -49,11 +49,29 @@ module SecApi
     # Cover page (document and entity information from DEI taxonomy)
     attribute? :cover_page, StatementHash
 
-    # Placeholder for validation (will be implemented in Story 4.3)
+    # Checks if this XbrlData object has valid structure.
     #
-    # @return [Boolean] Always returns true until validation logic is added
+    # Returns true if at least one financial statement section is present.
+    # This method is useful for defensive programming when XbrlData objects
+    # are created via the constructor directly (bypassing from_api validation).
+    #
+    # Note: Objects created via from_api are guaranteed valid, as validation
+    # happens at construction time and raises ValidationError on failure.
+    #
+    # @return [Boolean] true if structure is valid, false otherwise
+    #
+    # @example Check validity before processing
+    #   xbrl_data = client.xbrl.to_json(filing_url)
+    #   if xbrl_data.valid?
+    #     process_financial_data(xbrl_data)
+    #   end
+    #
+    # @example Always true for from_api objects
+    #   xbrl_data = XbrlData.from_api(response)  # Raises if invalid
+    #   xbrl_data.valid?  # => true (guaranteed)
+    #
     def valid?
-      true
+      [statements_of_income, balance_sheets, statements_of_cash_flows, cover_page].any?
     end
 
     # Returns all unique element names across all financial statements.
@@ -110,13 +128,41 @@ module SecApi
     #   xbrl_data = XbrlData.from_api(response)
     #
     def self.from_api(data)
+      statements_of_income = parse_statement_section(data, :StatementsOfIncome, "StatementsOfIncome")
+      balance_sheets = parse_statement_section(data, :BalanceSheets, "BalanceSheets")
+      statements_of_cash_flows = parse_statement_section(data, :StatementsOfCashFlows, "StatementsOfCashFlows")
+      cover_page = parse_statement_section(data, :CoverPage, "CoverPage")
+
+      validate_has_statements!(statements_of_income, balance_sheets, statements_of_cash_flows, cover_page, data)
+
       new(
-        statements_of_income: parse_statement_section(data, :StatementsOfIncome, "StatementsOfIncome"),
-        balance_sheets: parse_statement_section(data, :BalanceSheets, "BalanceSheets"),
-        statements_of_cash_flows: parse_statement_section(data, :StatementsOfCashFlows, "StatementsOfCashFlows"),
-        cover_page: parse_statement_section(data, :CoverPage, "CoverPage")
+        statements_of_income: statements_of_income,
+        balance_sheets: balance_sheets,
+        statements_of_cash_flows: statements_of_cash_flows,
+        cover_page: cover_page
       )
     end
+
+    # Validates that at least one financial statement section is present.
+    #
+    # @param statements_of_income [Hash, nil] Parsed income statement
+    # @param balance_sheets [Hash, nil] Parsed balance sheet
+    # @param statements_of_cash_flows [Hash, nil] Parsed cash flow statement
+    # @param cover_page [Hash, nil] Parsed cover page
+    # @param original_data [Hash] Original API response for error context
+    # @raise [ValidationError] when all statement sections are nil
+    #
+    def self.validate_has_statements!(statements_of_income, balance_sheets, statements_of_cash_flows, cover_page, original_data)
+      has_any_statement = [statements_of_income, balance_sheets, statements_of_cash_flows, cover_page].any?
+
+      return if has_any_statement
+
+      raise ValidationError, "XBRL response contains no financial statements. " \
+        "Expected at least one of: StatementsOfIncome, BalanceSheets, StatementsOfCashFlows, CoverPage. " \
+        "Received keys: #{original_data.keys.inspect}"
+    end
+
+    private_class_method :validate_has_statements!
 
     # Parses a statement section from API response.
     #

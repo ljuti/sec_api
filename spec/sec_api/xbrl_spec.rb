@@ -30,8 +30,8 @@ RSpec.describe SecApi::Xbrl do
           NetIncomeLoss: [{value: "96995000000", decimals: "-6", unitRef: "usd", period: {startDate: "2022-09-25", endDate: "2023-09-30"}}]
         },
         CoverPage: {
-          DocumentType: [{value: "10-K"}],
-          EntityRegistrantName: [{value: "Apple Inc"}]
+          DocumentType: [{value: "10-K", period: {instant: "2023-09-30"}}],
+          EntityRegistrantName: [{value: "Apple Inc", period: {instant: "2023-09-30"}}]
         }
       }
     end
@@ -174,12 +174,11 @@ RSpec.describe SecApi::Xbrl do
           200,
           {"Content-Type" => "application/json"},
           {
-            financials: {
-              revenue: 1_000_000.0,
-              assets: 5_000_000.0
+            StatementsOfIncome: {
+              Revenue: [{value: "1000000", period: {instant: "2023-09-30"}}]
             },
-            metadata: {
-              source_url: "https://www.sec.gov/example.xml"
+            BalanceSheets: {
+              Assets: [{value: "5000000", period: {instant: "2023-09-30"}}]
             }
           }.to_json
         ]
@@ -322,7 +321,7 @@ RSpec.describe SecApi::Xbrl do
           {"Content-Type" => "application/json"},
           {
             StatementsOfIncome: {
-              Revenue: [{value: "2000000", decimals: "-3", unitRef: "usd"}]
+              Revenue: [{value: "2000000", decimals: "-3", unitRef: "usd", period: {startDate: "2023-01-01", endDate: "2023-12-31"}}]
             },
             BalanceSheets: {
               Assets: [{value: "10000000", decimals: "-3", unitRef: "usd", period: {instant: "2023-09-30"}}]

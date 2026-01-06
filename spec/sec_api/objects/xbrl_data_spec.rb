@@ -95,12 +95,39 @@ RSpec.describe SecApi::XbrlData do
     end
   end
 
-  describe "#valid?" do
-    it "returns true (placeholder for Story 4.3 validation)" do
+  describe "#valid? (AC#6)" do
+    it "returns true for XbrlData with at least one statement" do
+      xbrl_data = described_class.new(
+        statements_of_income: {"Revenue" => [SecApi::Fact.new(value: "1000", period: SecApi::Period.new(instant: "2023-09-30"))]}
+      )
+      expect(xbrl_data.valid?).to be true
+    end
+
+    it "returns true for XbrlData with multiple statements" do
+      xbrl_data = described_class.new(
+        statements_of_income: {"Revenue" => [SecApi::Fact.new(value: "1000", period: SecApi::Period.new(instant: "2023-09-30"))]},
+        balance_sheets: {"Assets" => [SecApi::Fact.new(value: "5000", period: SecApi::Period.new(instant: "2023-09-30"))]}
+      )
+      expect(xbrl_data.valid?).to be true
+    end
+
+    it "returns true for XbrlData with empty statement hash" do
       xbrl_data = described_class.new(
         statements_of_income: {}
       )
       expect(xbrl_data.valid?).to be true
+    end
+
+    it "returns a boolean (not raises)" do
+      xbrl_data = described_class.new(
+        statements_of_income: {"Revenue" => [SecApi::Fact.new(value: "1000", period: SecApi::Period.new(instant: "2023-09-30"))]}
+      )
+      expect([true, false]).to include(xbrl_data.valid?)
+    end
+
+    it "returns false when all statements are nil (edge case via direct new)" do
+      xbrl_data = described_class.new
+      expect(xbrl_data.valid?).to be false
     end
   end
 
@@ -154,9 +181,9 @@ RSpec.describe SecApi::XbrlData do
           ]
         },
         CoverPage: {
-          DocumentType: [{value: "10-K"}],
-          EntityRegistrantName: [{value: "Apple Inc"}],
-          DocumentPeriodEndDate: [{value: "2023-09-30"}]
+          DocumentType: [{value: "10-K", period: {instant: "2023-09-30"}}],
+          EntityRegistrantName: [{value: "Apple Inc", period: {instant: "2023-09-30"}}],
+          DocumentPeriodEndDate: [{value: "2023-09-30", period: {instant: "2023-09-30"}}]
         }
       }
     end
@@ -209,7 +236,7 @@ RSpec.describe SecApi::XbrlData do
     it "handles string keys from JSON parsing" do
       string_key_response = {
         "StatementsOfIncome" => {
-          "Revenue" => [{"value" => "1000000"}]
+          "Revenue" => [{"value" => "1000000", "period" => {"instant" => "2023-09-30"}}]
         }
       }
 
@@ -219,7 +246,7 @@ RSpec.describe SecApi::XbrlData do
 
     it "handles missing statement sections gracefully" do
       partial_response = {
-        StatementsOfIncome: {Revenue: [{value: "1000"}]}
+        StatementsOfIncome: {Revenue: [{value: "1000", period: {instant: "2023-09-30"}}]}
       }
 
       xbrl_data = described_class.from_api(partial_response)
@@ -230,11 +257,12 @@ RSpec.describe SecApi::XbrlData do
       expect(xbrl_data.cover_page).to be_nil
     end
 
-    it "handles empty response" do
-      xbrl_data = described_class.from_api({})
-
-      expect(xbrl_data.statements_of_income).to be_nil
-      expect(xbrl_data.balance_sheets).to be_nil
+    it "raises ValidationError for empty response" do
+      # Empty response has no statements, which is a validation failure
+      # Moved to structural validation tests - this verifies error is raised
+      expect {
+        described_class.from_api({})
+      }.to raise_error(SecApi::ValidationError)
     end
 
     it "returns immutable XbrlData" do
@@ -414,6 +442,129 @@ RSpec.describe SecApi::XbrlData do
       else
         expect(facts).to be_nil
       end
+    end
+  end
+
+  describe "structural validation (AC#1, AC#2)" do
+    context "when response contains no financial statements" do
+      it "raises ValidationError for empty response" do
+        expect {
+          described_class.from_api({})
+        }.to raise_error(
+          SecApi::ValidationError,
+          /XBRL response contains no financial statements/
+        )
+      end
+
+      it "raises ValidationError when all statement sections are nil" do
+        response = {
+          StatementsOfIncome: nil,
+          BalanceSheets: nil,
+          StatementsOfCashFlows: nil,
+          CoverPage: nil
+        }
+
+        expect {
+          described_class.from_api(response)
+        }.to raise_error(
+          SecApi::ValidationError,
+          /Expected at least one of: StatementsOfIncome, BalanceSheets, StatementsOfCashFlows, CoverPage/
+        )
+      end
+    end
+
+    context "when response contains at least one statement" do
+      it "passes validation with only statements_of_income" do
+        response = {StatementsOfIncome: {Revenue: [{value: "1000", period: {instant: "2023-09-30"}}]}}
+        expect { described_class.from_api(response) }.not_to raise_error
+      end
+
+      it "passes validation with only balance_sheets" do
+        response = {BalanceSheets: {Assets: [{value: "5000", period: {instant: "2023-09-30"}}]}}
+        expect { described_class.from_api(response) }.not_to raise_error
+      end
+
+      it "passes validation with only statements_of_cash_flows" do
+        response = {StatementsOfCashFlows: {NetCashFlow: [{value: "2000", period: {instant: "2023-09-30"}}]}}
+        expect { described_class.from_api(response) }.not_to raise_error
+      end
+
+      it "passes validation with only cover_page" do
+        response = {CoverPage: {DocumentType: [{value: "10-K", period: {instant: "2023-09-30"}}]}}
+        expect { described_class.from_api(response) }.not_to raise_error
+      end
+
+      it "passes validation with empty statement hash (structure valid)" do
+        response = {StatementsOfIncome: {}}
+        expect { described_class.from_api(response) }.not_to raise_error
+      end
+    end
+
+    context "malformed statement data edge cases" do
+      it "raises NoMethodError for nil facts_array (caught by XBRL proxy)" do
+        # When API returns nil for facts_array, NoMethodError is raised
+        # This is caught by XBRL proxy and wrapped in ValidationError
+        response = {StatementsOfIncome: {Revenue: nil}}
+
+        expect {
+          described_class.from_api(response)
+        }.to raise_error(NoMethodError)
+      end
+
+      it "raises NoMethodError for non-array facts (caught by XBRL proxy)" do
+        # When API returns non-array for facts_array
+        response = {StatementsOfIncome: {Revenue: "not_an_array"}}
+
+        expect {
+          described_class.from_api(response)
+        }.to raise_error(NoMethodError)
+      end
+    end
+  end
+
+  describe "validation error details (AC#5)" do
+    it "ValidationError message includes what failed" do
+      expect {
+        described_class.from_api({})
+      }.to raise_error(SecApi::ValidationError, /XBRL response contains no financial statements/)
+    end
+
+    it "ValidationError message includes expected values" do
+      expect {
+        described_class.from_api({})
+      }.to raise_error(SecApi::ValidationError, /Expected at least one of/)
+    end
+
+    it "ValidationError message includes received keys" do
+      expect {
+        described_class.from_api({UnknownKey: "value"})
+      }.to raise_error(SecApi::ValidationError, /Received keys:.*UnknownKey/)
+    end
+
+    it "ValidationError is raised immediately (not silently ignored)" do
+      raised = false
+      begin
+        described_class.from_api({})
+      rescue SecApi::ValidationError
+        raised = true
+      end
+      expect(raised).to be true
+    end
+
+    it "error message follows 'what failed, why, how to fix' pattern" do
+      error = nil
+      begin
+        described_class.from_api({UnknownKey: "data"})
+      rescue SecApi::ValidationError => e
+        error = e
+      end
+
+      # What failed: "XBRL response contains no financial statements"
+      expect(error.message).to include("no financial statements")
+      # How to fix: "Expected at least one of: StatementsOfIncome..."
+      expect(error.message).to include("Expected at least one of")
+      # What was received: "Received keys: [:UnknownKey]"
+      expect(error.message).to include("Received keys:")
     end
   end
 
