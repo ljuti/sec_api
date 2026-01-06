@@ -56,6 +56,31 @@ module SecApi
       true
     end
 
+    # Returns all unique element names across all financial statements.
+    #
+    # This method is useful for discovering what XBRL elements are available
+    # in a filing, as different companies use different US-GAAP elements.
+    #
+    # @return [Array<String>] Sorted, unique element names from all statements
+    #
+    # @example Discover available elements
+    #   xbrl_data = client.xbrl.to_json(filing_url)
+    #   xbrl_data.element_names
+    #   # => ["Assets", "CostOfGoodsAndServicesSold", "DocumentType", ...]
+    #
+    # @example Search for revenue-related elements
+    #   xbrl_data.element_names.grep(/Revenue/)
+    #   # => ["RevenueFromContractWithCustomerExcludingAssessedTax", ...]
+    #
+    def element_names
+      names = []
+      names.concat(statements_of_income.keys) if statements_of_income
+      names.concat(balance_sheets.keys) if balance_sheets
+      names.concat(statements_of_cash_flows.keys) if statements_of_cash_flows
+      names.concat(cover_page.keys) if cover_page
+      names.uniq.sort
+    end
+
     # Override constructor to ensure deep immutability
     def initialize(attributes)
       super

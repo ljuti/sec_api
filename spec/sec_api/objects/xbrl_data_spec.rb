@@ -291,6 +291,132 @@ RSpec.describe SecApi::XbrlData do
     end
   end
 
+  describe "#element_names" do
+    let(:xbrl_data) do
+      described_class.new(
+        statements_of_income: {
+          "RevenueFromContractWithCustomerExcludingAssessedTax" => [SecApi::Fact.new(value: "394328000000")],
+          "CostOfGoodsAndServicesSold" => [SecApi::Fact.new(value: "214137000000")]
+        },
+        balance_sheets: {
+          "Assets" => [SecApi::Fact.new(value: "352755000000")],
+          "Liabilities" => [SecApi::Fact.new(value: "290020000000")]
+        },
+        statements_of_cash_flows: {
+          "NetIncomeLoss" => [SecApi::Fact.new(value: "96995000000")]
+        },
+        cover_page: {
+          "DocumentType" => [SecApi::Fact.new(value: "10-K")],
+          "EntityRegistrantName" => [SecApi::Fact.new(value: "Apple Inc")]
+        }
+      )
+    end
+
+    it "returns all element names across all statements" do
+      names = xbrl_data.element_names
+
+      expect(names).to include("RevenueFromContractWithCustomerExcludingAssessedTax")
+      expect(names).to include("CostOfGoodsAndServicesSold")
+      expect(names).to include("Assets")
+      expect(names).to include("Liabilities")
+      expect(names).to include("NetIncomeLoss")
+      expect(names).to include("DocumentType")
+      expect(names).to include("EntityRegistrantName")
+    end
+
+    it "returns element names as an array" do
+      expect(xbrl_data.element_names).to be_an(Array)
+    end
+
+    it "returns unique element names" do
+      # Create xbrl_data with duplicate element names across statements
+      xbrl_with_dups = described_class.new(
+        statements_of_income: {"Revenue" => [SecApi::Fact.new(value: "100")]},
+        balance_sheets: {"Revenue" => [SecApi::Fact.new(value: "100")]}
+      )
+
+      names = xbrl_with_dups.element_names
+      expect(names.count("Revenue")).to eq(1)
+    end
+
+    it "returns sorted element names" do
+      names = xbrl_data.element_names
+      expect(names).to eq(names.sort)
+    end
+
+    it "returns empty array when no statements have data" do
+      empty_xbrl = described_class.new
+      expect(empty_xbrl.element_names).to eq([])
+    end
+
+    it "handles partially populated statements" do
+      partial_xbrl = described_class.new(
+        statements_of_income: {"Revenue" => [SecApi::Fact.new(value: "100")]}
+      )
+
+      expect(partial_xbrl.element_names).to eq(["Revenue"])
+    end
+  end
+
+  describe "accessing non-existent elements (AC#5)" do
+    let(:xbrl_data) do
+      revenue_fact = SecApi::Fact.new(value: "394328000000")
+      assets_fact = SecApi::Fact.new(value: "352755000000")
+      described_class.new(
+        statements_of_income: {"RevenueFromContractWithCustomerExcludingAssessedTax" => [revenue_fact]},
+        balance_sheets: {"Assets" => [assets_fact]},
+        statements_of_cash_flows: {"NetIncomeLoss" => [SecApi::Fact.new(value: "96995000000")]},
+        cover_page: {"DocumentType" => [SecApi::Fact.new(value: "10-K")]}
+      )
+    end
+
+    it "returns nil for non-existent element in statements_of_income" do
+      expect(xbrl_data.statements_of_income["NonExistentElement"]).to be_nil
+    end
+
+    it "returns nil for non-existent element in balance_sheets" do
+      expect(xbrl_data.balance_sheets["NonExistentElement"]).to be_nil
+    end
+
+    it "returns nil for non-existent element in statements_of_cash_flows" do
+      expect(xbrl_data.statements_of_cash_flows["NonExistentElement"]).to be_nil
+    end
+
+    it "returns nil for non-existent element in cover_page" do
+      expect(xbrl_data.cover_page["NonExistentElement"]).to be_nil
+    end
+
+    it "does not raise exception when accessing missing element" do
+      expect { xbrl_data.statements_of_income["MissingElement"] }.not_to raise_error
+      expect { xbrl_data.balance_sheets["MissingElement"] }.not_to raise_error
+    end
+
+    it "supports safe navigation pattern with nil statement" do
+      empty_xbrl = described_class.new
+
+      # Safe navigation when statement is nil
+      result = empty_xbrl.statements_of_income&.[]("Revenue")
+      expect(result).to be_nil
+    end
+
+    it "supports safe navigation pattern for nil element access" do
+      # Safe navigation when element doesn't exist
+      result = xbrl_data.statements_of_income["NonExistent"]&.first&.to_numeric
+      expect(result).to be_nil
+    end
+
+    it "allows conditional checks before using facts" do
+      facts = xbrl_data.statements_of_income["NonExistentElement"]
+
+      # User can safely check for nil
+      if facts
+        expect(facts.first).to be_a(SecApi::Fact)
+      else
+        expect(facts).to be_nil
+      end
+    end
+  end
+
   describe "accessing financial data" do
     let(:api_response) do
       {

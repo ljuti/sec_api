@@ -76,6 +76,88 @@ RSpec.describe SecApi::Fact do
     end
   end
 
+  describe "#numeric?" do
+    it "returns true for positive integers" do
+      fact = described_class.new(value: "394328000000")
+      expect(fact.numeric?).to be true
+    end
+
+    it "returns true for negative integers" do
+      fact = described_class.new(value: "-50000")
+      expect(fact.numeric?).to be true
+    end
+
+    it "returns true for decimal values" do
+      fact = described_class.new(value: "123.45")
+      expect(fact.numeric?).to be true
+    end
+
+    it "returns true for negative decimal values" do
+      fact = described_class.new(value: "-123.45")
+      expect(fact.numeric?).to be true
+    end
+
+    it "returns true for zero" do
+      fact = described_class.new(value: "0")
+      expect(fact.numeric?).to be true
+    end
+
+    it "returns true for scientific notation" do
+      fact = described_class.new(value: "1.5e10")
+      expect(fact.numeric?).to be true
+    end
+
+    it "returns true for negative scientific notation" do
+      fact = described_class.new(value: "-2.5E-3")
+      expect(fact.numeric?).to be true
+    end
+
+    it "returns false for text values" do
+      fact = described_class.new(value: "N/A")
+      expect(fact.numeric?).to be false
+    end
+
+    it "returns false for empty string" do
+      fact = described_class.new(value: "")
+      expect(fact.numeric?).to be false
+    end
+
+    it "returns false for strings with commas" do
+      fact = described_class.new(value: "1,000,000")
+      expect(fact.numeric?).to be false
+    end
+
+    it "returns false for currency symbols" do
+      fact = described_class.new(value: "$100")
+      expect(fact.numeric?).to be false
+    end
+
+    it "returns false for mixed alphanumeric" do
+      fact = described_class.new(value: "100 million")
+      expect(fact.numeric?).to be false
+    end
+
+    it "returns false for percentage format" do
+      fact = described_class.new(value: "10%")
+      expect(fact.numeric?).to be false
+    end
+
+    it "returns true for leading/trailing whitespace around valid numbers" do
+      fact = described_class.new(value: "  123.45  ")
+      expect(fact.numeric?).to be true
+    end
+
+    it "returns false for whitespace-only string" do
+      fact = described_class.new(value: "   ")
+      expect(fact.numeric?).to be false
+    end
+
+    it "returns false for leading plus sign (XBRL uses unadorned positive numbers)" do
+      fact = described_class.new(value: "+123")
+      expect(fact.numeric?).to be false
+    end
+  end
+
   describe "immutability" do
     it "is frozen after creation" do
       fact = described_class.new(value: "1000", decimals: "-6", unit_ref: "usd")

@@ -57,6 +57,46 @@ module SecApi
       value.to_f
     end
 
+    # Checks if the value can be safely converted to a numeric type.
+    #
+    # This predicate is useful for filtering facts before numeric operations,
+    # as XBRL facts may contain text values like "N/A" or formatted strings
+    # like "1,000,000" that won't convert properly.
+    #
+    # Supports:
+    # - Integers (positive and negative)
+    # - Decimals (positive and negative)
+    # - Scientific notation (e.g., "1.5e10", "-2.5E-3")
+    # - Leading/trailing whitespace around valid numbers
+    #
+    # Does NOT support (returns false):
+    # - Comma-formatted numbers ("1,000,000")
+    # - Currency symbols ("$100")
+    # - Percentages ("10%")
+    # - Text values ("N/A", "none")
+    # - Empty or whitespace-only strings
+    #
+    # @return [Boolean] true if value is a valid numeric string
+    #
+    # @example Check before conversion
+    #   fact = Fact.new(value: "394328000000")
+    #   fact.numeric?  # => true
+    #   fact.to_numeric  # => 394328000000.0
+    #
+    # @example Filter numeric facts
+    #   facts.select(&:numeric?).map(&:to_numeric)
+    #
+    # @note Leading plus signs (+123) return false as XBRL values use
+    #   unadorned positive numbers. Only explicit minus signs are supported.
+    #
+    def numeric?
+      return false if value.strip.empty?
+
+      # Match integers, decimals, and scientific notation
+      # Allows optional leading/trailing whitespace, minus sign only (no +)
+      !!value.match?(/\A\s*-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\s*\z/)
+    end
+
     def initialize(attributes)
       super
       deep_freeze(segment) if segment
