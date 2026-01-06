@@ -130,6 +130,7 @@ RSpec.describe SecApi::ExtractedData do
           100.times do
             data.text
             data.sections[:risk_factors] if data.sections
+            data.risk_factors  # Also test dynamic accessor
             data.metadata
           end
         end
@@ -137,6 +138,76 @@ RSpec.describe SecApi::ExtractedData do
 
       # All threads complete without errors
       expect { threads.each(&:join) }.not_to raise_error
+    end
+
+    it "freezes text attribute for thread safety" do
+      data = described_class.new(text: "Original text")
+      expect(data.text).to be_frozen
+    end
+  end
+
+  describe "dynamic section accessors" do
+    context "with sections present" do
+      let(:data) do
+        described_class.new(
+          sections: {
+            risk_factors: "Risk factors content",
+            mda: "MD&A analysis content",
+            financials: "Financial statements"
+          }
+        )
+      end
+
+      it "provides accessor method for known sections" do
+        expect(data.risk_factors).to eq("Risk factors content")
+        expect(data.mda).to eq("MD&A analysis content")
+        expect(data.financials).to eq("Financial statements")
+      end
+
+      it "responds to section names" do
+        expect(data).to respond_to(:risk_factors)
+        expect(data).to respond_to(:mda)
+        expect(data).to respond_to(:financials)
+      end
+
+      it "returns nil for sections not in the hash" do
+        expect(data.nonexistent_section).to be_nil
+      end
+
+      it "does not respond to nonexistent sections" do
+        expect(data).not_to respond_to(:nonexistent_section)
+      end
+    end
+
+    context "with nil sections" do
+      let(:data) { described_class.new(text: "Only text", sections: nil) }
+
+      it "returns nil for any section accessor" do
+        expect(data.risk_factors).to be_nil
+        expect(data.any_section).to be_nil
+      end
+
+      it "does not respond to section names when sections is nil" do
+        expect(data).not_to respond_to(:risk_factors)
+      end
+    end
+
+    context "with empty sections" do
+      let(:data) { described_class.new(sections: {}) }
+
+      it "returns nil for any section accessor" do
+        expect(data.risk_factors).to be_nil
+      end
+
+      it "does not respond to section names when sections is empty" do
+        expect(data).not_to respond_to(:risk_factors)
+      end
+    end
+
+    it "still raises NoMethodError for truly undefined methods" do
+      data = described_class.new(sections: {risk_factors: "Content"})
+      # Methods that don't look like section access should still error
+      expect { data.completely_undefined_object_method! }.to raise_error(NoMethodError)
     end
   end
 end
