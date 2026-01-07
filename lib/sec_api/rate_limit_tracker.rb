@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module SecApi
-  # Thread-safe manager for rate limit state.
+  # Thread-safe manager for rate limit state and queue tracking.
   #
   # This class provides thread-safe storage and access to rate limit information
   # using a Mutex for synchronization. Each Client instance owns its own tracker,
@@ -9,6 +9,7 @@ module SecApi
   #
   # The tracker receives updates from the RateLimiter middleware and provides
   # read access to the current state via the Client#rate_limit_state method.
+  # It also tracks the number of queued requests waiting for rate limit reset.
   #
   # @example Basic usage
   #   tracker = SecApi::RateLimitTracker.new
@@ -51,6 +52,7 @@ module SecApi
     def initialize
       @mutex = Mutex.new
       @state = nil
+      @queued_count = 0
     end
 
     # Updates the rate limit state with new values.
@@ -108,6 +110,45 @@ module SecApi
     #
     def reset!
       @mutex.synchronize { @state = nil }
+    end
+
+    # Returns the current count of queued requests.
+    #
+    # When the rate limit is exhausted (remaining = 0), requests are queued
+    # until the rate limit resets. This method returns the current count of
+    # waiting requests.
+    #
+    # @return [Integer] Number of requests currently queued
+    #
+    # @example
+    #   tracker.queued_count  # => 3 (three requests waiting)
+    #
+    def queued_count
+      @mutex.synchronize { @queued_count }
+    end
+
+    # Increments the queued request counter.
+    #
+    # Called by the RateLimiter middleware when a request enters the queue.
+    #
+    # @return [Integer] The new queued count
+    #
+    def increment_queued
+      @mutex.synchronize do
+        @queued_count += 1
+      end
+    end
+
+    # Decrements the queued request counter.
+    #
+    # Called by the RateLimiter middleware when a request exits the queue.
+    #
+    # @return [Integer] The new queued count
+    #
+    def decrement_queued
+      @mutex.synchronize do
+        @queued_count = [@queued_count - 1, 0].max
+      end
     end
   end
 end

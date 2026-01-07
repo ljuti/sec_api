@@ -533,6 +533,44 @@ RSpec.describe SecApi::Client do
     end
   end
 
+  describe "#queued_requests" do
+    let(:config) { SecApi::Config.new(api_key: "test_api_key_valid") }
+    let(:client) { SecApi::Client.new(config) }
+
+    it "returns 0 when no requests are queued" do
+      expect(client.queued_requests).to eq(0)
+    end
+
+    it "returns the count from the rate limit tracker" do
+      tracker = client.instance_variable_get(:@_rate_limit_tracker)
+
+      # Simulate queued requests via tracker
+      tracker.increment_queued
+      tracker.increment_queued
+      expect(client.queued_requests).to eq(2)
+
+      tracker.decrement_queued
+      expect(client.queued_requests).to eq(1)
+
+      tracker.decrement_queued
+      expect(client.queued_requests).to eq(0)
+    end
+
+    it "each client maintains independent queue counts" do
+      config = SecApi::Config.new(api_key: "test_api_key_valid")
+      client1 = SecApi::Client.new(config)
+      client2 = SecApi::Client.new(config)
+
+      client1.instance_variable_get(:@_rate_limit_tracker).increment_queued
+      client1.instance_variable_get(:@_rate_limit_tracker).increment_queued
+
+      client2.instance_variable_get(:@_rate_limit_tracker).increment_queued
+
+      expect(client1.queued_requests).to eq(2)
+      expect(client2.queued_requests).to eq(1)
+    end
+  end
+
   describe "connection pooling and thread safety" do
     it "supports 10+ concurrent requests without blocking (NFR14)" do
       config = SecApi::Config.new(api_key: "test_api_key_valid")

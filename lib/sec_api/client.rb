@@ -86,6 +86,31 @@ module SecApi
       @_rate_limit_tracker.current_state
     end
 
+    # Returns the number of requests currently queued waiting for rate limit reset.
+    #
+    # When the rate limit is exhausted (remaining = 0), incoming requests are
+    # queued until the rate limit window resets. This method returns the current
+    # count of waiting requests, useful for monitoring and debugging.
+    #
+    # @return [Integer] Number of requests currently waiting in queue
+    #
+    # @example Monitor queue depth
+    #   client = SecApi::Client.new
+    #   # During heavy load when rate limited:
+    #   puts "#{client.queued_requests} requests waiting"
+    #
+    # @example Logging queue status
+    #   config = SecApi::Config.new(
+    #     api_key: "...",
+    #     on_queue: ->(info) {
+    #       puts "Request queued (#{info[:queue_size]} total waiting)"
+    #     }
+    #   )
+    #
+    def queued_requests
+      @_rate_limit_tracker.queued_count
+    end
+
     private
 
     def build_connection
@@ -102,14 +127,19 @@ module SecApi
         # Retries on [429, 500, 502, 503, 504] and Faraday exceptions
         conn.request :retry, retry_options
 
-        # Rate limiter middleware - extracts X-RateLimit-* headers from responses
-        # and proactively throttles when approaching rate limits.
+        # Rate limiter middleware - extracts X-RateLimit-* headers from responses,
+        # proactively throttles when approaching rate limits, and queues requests
+        # when rate limit is exhausted (remaining = 0).
         # Positioned after Retry to capture final response headers (not intermediate retries)
         # Positioned before ErrorHandler to capture headers even from 429 responses
         conn.use Middleware::RateLimiter,
           state_store: @_rate_limit_tracker,
           threshold: @_config.rate_limit_threshold,
-          on_throttle: @_config.on_throttle
+          queue_wait_warning_threshold: @_config.queue_wait_warning_threshold,
+          on_throttle: @_config.on_throttle,
+          on_queue: @_config.on_queue,
+          on_dequeue: @_config.on_dequeue,
+          on_excessive_wait: @_config.on_excessive_wait
 
         # Error handler middleware - converts HTTP errors to typed exceptions
         # Positioned AFTER retry so non-retryable errors (401, 404, etc.) fail immediately

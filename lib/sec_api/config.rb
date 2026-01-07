@@ -41,6 +41,32 @@ module SecApi
   #     - :reset_at [Time, nil] - When the rate limit resets (from X-RateLimit-Reset)
   #     - :attempt [Integer] - Current retry attempt number
   #
+  # @!attribute [rw] queue_wait_warning_threshold
+  #   @return [Integer] Threshold in seconds for excessive wait warnings.
+  #     When a request is queued and the wait time exceeds this threshold,
+  #     the on_excessive_wait callback is invoked. Default is 300 (5 minutes).
+  #
+  # @!attribute [rw] on_queue
+  #   @return [Proc, nil] Optional callback invoked when a request is queued
+  #     due to exhausted rate limit (remaining = 0). Receives a hash with:
+  #     - :queue_size [Integer] - Number of requests currently queued
+  #     - :wait_time [Float] - Estimated seconds until rate limit resets
+  #     - :reset_at [Time] - When the rate limit window resets
+  #
+  # @!attribute [rw] on_excessive_wait
+  #   @return [Proc, nil] Optional callback invoked when queue wait time exceeds
+  #     queue_wait_warning_threshold. The request continues waiting after callback.
+  #     Receives a hash with:
+  #     - :wait_time [Float] - Seconds the request will wait
+  #     - :threshold [Integer] - The configured warning threshold
+  #     - :reset_at [Time] - When the rate limit resets
+  #
+  # @!attribute [rw] on_dequeue
+  #   @return [Proc, nil] Optional callback invoked when a request exits the queue
+  #     after waiting for rate limit reset. Receives a hash with:
+  #     - :queue_size [Integer] - Number of requests remaining in queue
+  #     - :waited [Float] - Actual seconds the request waited
+  #
   class Config < Anyway::Config
     config_name :secapi
 
@@ -52,9 +78,13 @@ module SecApi
       :retry_backoff_factor,
       :request_timeout,
       :rate_limit_threshold,
+      :queue_wait_warning_threshold,
       :on_retry,
       :on_throttle,
-      :on_rate_limit
+      :on_rate_limit,
+      :on_queue,
+      :on_dequeue,
+      :on_excessive_wait
 
     # Sensible defaults
     def initialize(*)
@@ -66,6 +96,7 @@ module SecApi
       self.retry_backoff_factor ||= 2
       self.request_timeout ||= 30
       self.rate_limit_threshold ||= 0.1
+      self.queue_wait_warning_threshold ||= 300  # 5 minutes
     end
 
     # Validation called by Client

@@ -141,4 +141,96 @@ RSpec.describe SecApi::RateLimitTracker do
       expect(tracker2.current_state.limit).to eq(200)
     end
   end
+
+  describe "#queued_count" do
+    it "starts at 0" do
+      expect(tracker.queued_count).to eq(0)
+    end
+
+    it "returns the current queued count" do
+      tracker.increment_queued
+      expect(tracker.queued_count).to eq(1)
+    end
+  end
+
+  describe "#increment_queued" do
+    it "increments the queued count" do
+      tracker.increment_queued
+      expect(tracker.queued_count).to eq(1)
+
+      tracker.increment_queued
+      expect(tracker.queued_count).to eq(2)
+    end
+
+    it "returns the new count" do
+      result = tracker.increment_queued
+      expect(result).to eq(1)
+
+      result = tracker.increment_queued
+      expect(result).to eq(2)
+    end
+
+    it "is thread-safe" do
+      threads = 10.times.map do
+        Thread.new { tracker.increment_queued }
+      end
+      threads.each(&:join)
+
+      expect(tracker.queued_count).to eq(10)
+    end
+  end
+
+  describe "#decrement_queued" do
+    it "decrements the queued count" do
+      tracker.increment_queued
+      tracker.increment_queued
+      tracker.decrement_queued
+
+      expect(tracker.queued_count).to eq(1)
+    end
+
+    it "does not go below 0" do
+      tracker.decrement_queued
+      expect(tracker.queued_count).to eq(0)
+
+      tracker.decrement_queued
+      expect(tracker.queued_count).to eq(0)
+    end
+
+    it "returns the new count" do
+      tracker.increment_queued
+      tracker.increment_queued
+      result = tracker.decrement_queued
+      expect(result).to eq(1)
+    end
+
+    it "is thread-safe" do
+      # First increment 10 times
+      10.times { tracker.increment_queued }
+      expect(tracker.queued_count).to eq(10)
+
+      # Then decrement 10 times concurrently
+      threads = 10.times.map do
+        Thread.new { tracker.decrement_queued }
+      end
+      threads.each(&:join)
+
+      expect(tracker.queued_count).to eq(0)
+    end
+  end
+
+  describe "queued count independence" do
+    it "maintains separate queued counts per tracker instance" do
+      tracker1 = described_class.new
+      tracker2 = described_class.new
+
+      tracker1.increment_queued
+      tracker1.increment_queued
+
+      tracker2.increment_queued
+
+      expect(tracker1.queued_count).to eq(2)
+      expect(tracker2.queued_count).to eq(1)
+    end
+  end
 end
