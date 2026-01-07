@@ -122,6 +122,15 @@ module SecApi
       end
     end
 
+    # Builds retry configuration options for faraday-retry middleware.
+    #
+    # The retry middleware handles transient failures with exponential backoff.
+    # faraday-retry automatically respects Retry-After headers from 429 responses.
+    # When Retry-After is absent but X-RateLimit-Reset is present, the middleware
+    # calculates the delay from the reset timestamp.
+    #
+    # @return [Hash] Configuration options for Faraday::Retry::Middleware
+    # @api private
     def retry_options
       {
         max: @_config.retry_max_attempts,
@@ -137,14 +146,61 @@ module SecApi
         ],
         methods: [:get, :post],
         retry_statuses: [429, 500, 502, 503, 504],
-        retry_block: ->(env, options, retries, exception) {
-          # Called after EACH retry attempt (not just when exhausted)
+        # Custom retry logic for RateLimitError with reset_at timestamp
+        # When Retry-After header is absent but X-RateLimit-Reset is present,
+        # calculate the delay from the reset timestamp
+        retry_if: ->(env, exception) {
+          calculate_rate_limit_interval(env, exception)
+          true # Always allow retry for transient errors
+        },
+        retry_block: ->(env:, options:, retry_count:, exception:, will_retry_in:) {
+          # Called before EACH retry attempt
+          # Invoke on_rate_limit callback for 429 responses
+          invoke_on_rate_limit_callback(exception, retry_count)
+
           # Basic logging - users can configure @_config.on_retry callback for custom instrumentation
           if @_config.respond_to?(:on_retry) && @_config.on_retry
-            @_config.on_retry.call(env, exception, retries)
+            @_config.on_retry.call(env, exception, retry_count)
           end
         }
       }
+    end
+
+    # Calculates and sets retry interval based on RateLimitError reset_at.
+    #
+    # When a RateLimitError has a reset_at timestamp but no retry_after,
+    # this method calculates the delay from the reset timestamp and stores
+    # it in env[:retry_interval] for the retry middleware to use.
+    #
+    # @param env [Hash] Faraday request environment
+    # @param exception [Exception] The exception that triggered the retry
+    # @return [void]
+    # @api private
+    def calculate_rate_limit_interval(env, exception)
+      return unless exception.is_a?(SecApi::RateLimitError)
+      return if exception.retry_after # Retry-After takes precedence
+
+      if exception.reset_at
+        delay = exception.reset_at - Time.now
+        env[:retry_interval] = delay.clamp(1, @_config.retry_max_delay) if delay.positive?
+      end
+    end
+
+    # Invokes the on_rate_limit callback for RateLimitError exceptions.
+    #
+    # @param exception [Exception] The exception that triggered the retry
+    # @param retry_count [Integer] Zero-indexed retry count from faraday-retry
+    # @return [void]
+    # @api private
+    def invoke_on_rate_limit_callback(exception, retry_count)
+      return unless exception.is_a?(SecApi::RateLimitError)
+      return unless @_config.respond_to?(:on_rate_limit) && @_config.on_rate_limit
+
+      @_config.on_rate_limit.call({
+        retry_after: exception.retry_after,
+        reset_at: exception.reset_at,
+        attempt: retry_count + 1 # Convert 0-indexed to 1-indexed for user convenience
+      })
     end
   end
 end

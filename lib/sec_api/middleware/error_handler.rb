@@ -82,17 +82,75 @@ module SecApi
             "Unprocessable entity (422): The request was valid but could not be processed. " \
             "This may indicate invalid query logic or unsupported parameter combinations."
         when 429
-          rate_limit_reset = env[:response_headers]&.[]("X-RateLimit-Reset") || env[:response_headers]&.[]("x-ratelimit-reset")
-          reset_info = rate_limit_reset ? "Reset at: #{rate_limit_reset}. " : ""
-          raise RateLimitError,
-            "Rate limit exceeded (429 Too Many Requests). " \
-            "#{reset_info}" \
-            "automatic retry attempts exhausted. Consider implementing backoff or reducing request rate."
+          retry_after = parse_retry_after(env[:response_headers])
+          reset_at = parse_reset_timestamp(env[:response_headers])
+
+          raise RateLimitError.new(
+            build_rate_limit_message(retry_after, reset_at),
+            retry_after: retry_after,
+            reset_at: reset_at
+          )
         when 500..504
           raise ServerError,
             "sec-api.io server error (#{env[:status]}). " \
             "automatic retry attempts exhausted. This may indicate a prolonged outage."
         end
+      end
+
+      # Parses Retry-After header value (integer seconds or HTTP-date format).
+      #
+      # @param headers [Hash, nil] Response headers
+      # @return [Integer, nil] Seconds to wait, or nil if header not present/invalid
+      def parse_retry_after(headers)
+        return nil unless headers
+
+        value = headers["Retry-After"] || headers["retry-after"]
+        return nil unless value
+
+        # Try integer format first (e.g., "60")
+        Integer(value, 10)
+      rescue ArgumentError
+        # Try HTTP-date format (e.g., "Wed, 07 Jan 2026 12:00:00 GMT")
+        begin
+          http_date = Time.httpdate(value)
+          delay = (http_date - Time.now).to_i
+          [delay, 0].max
+        rescue ArgumentError
+          nil
+        end
+      end
+
+      # Parses X-RateLimit-Reset header to a Time object.
+      #
+      # @param headers [Hash, nil] Response headers
+      # @return [Time, nil] Reset timestamp, or nil if header not present/invalid
+      def parse_reset_timestamp(headers)
+        return nil unless headers
+
+        value = headers["X-RateLimit-Reset"] || headers["x-ratelimit-reset"]
+        return nil unless value
+
+        Time.at(Integer(value, 10))
+      rescue ArgumentError, TypeError
+        nil
+      end
+
+      # Builds an actionable error message for rate limit errors.
+      #
+      # @param retry_after [Integer, nil] Seconds to wait
+      # @param reset_at [Time, nil] Reset timestamp
+      # @return [String] Formatted error message
+      def build_rate_limit_message(retry_after, reset_at)
+        parts = ["Rate limit exceeded (429 Too Many Requests)."]
+
+        if retry_after
+          parts << "Retry after #{retry_after} seconds."
+        elsif reset_at
+          parts << "Rate limit resets at #{reset_at.utc.strftime("%Y-%m-%d %H:%M:%S UTC")}."
+        end
+
+        parts << "Automatic retry attempts exhausted. Consider implementing backoff or reducing request rate."
+        parts.join(" ")
       end
     end
   end

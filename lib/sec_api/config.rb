@@ -32,6 +32,15 @@ module SecApi
   #     - :delay [Float] - Seconds the request will be delayed
   #     - :reset_at [Time] - When the rate limit window resets
   #
+  # @!attribute [rw] on_rate_limit
+  #   @return [Proc, nil] Optional callback invoked when a 429 rate limit response
+  #     is received and will be retried. This is the reactive callback (after hitting
+  #     the limit), distinct from on_throttle which is proactive (before hitting limit).
+  #     Receives a hash with the following keys:
+  #     - :retry_after [Integer, nil] - Seconds to wait (from Retry-After header)
+  #     - :reset_at [Time, nil] - When the rate limit resets (from X-RateLimit-Reset)
+  #     - :attempt [Integer] - Current retry attempt number
+  #
   class Config < Anyway::Config
     config_name :secapi
 
@@ -44,7 +53,8 @@ module SecApi
       :request_timeout,
       :rate_limit_threshold,
       :on_retry,
-      :on_throttle
+      :on_throttle,
+      :on_rate_limit
 
     # Sensible defaults
     def initialize(*)

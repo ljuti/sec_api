@@ -134,7 +134,7 @@ RSpec.describe SecApi::Middleware::ErrorHandler do
         }.to raise_error(SecApi::RateLimitError) do |error|
           expect(error.message).to include("Rate limit exceeded")
           expect(error.message).to include("429")
-          expect(error.message).to include("Reset at: 1640000000")
+          expect(error.message).to include("Rate limit resets at")
           expect(error.message).not_to include("api_key")
           expect(error.message).not_to include("Authorization")
         end
@@ -147,7 +147,7 @@ RSpec.describe SecApi::Middleware::ErrorHandler do
           connection.get("/test")
         }.to raise_error(SecApi::RateLimitError) do |error|
           expect(error.message).to include("429")
-          expect(error.message).not_to include("Reset at")
+          expect(error.message).not_to include("resets at")
         end
       end
 
@@ -157,6 +157,91 @@ RSpec.describe SecApi::Middleware::ErrorHandler do
         expect {
           connection.get("/test")
         }.to raise_error(SecApi::TransientError)
+      end
+
+      it "includes retry_after attribute when Retry-After header present" do
+        stubs.get("/test") { [429, {"Retry-After" => "60"}, ""] }
+
+        expect {
+          connection.get("/test")
+        }.to raise_error(SecApi::RateLimitError) do |error|
+          expect(error.retry_after).to eq(60)
+          expect(error.message).to include("Retry after 60 seconds")
+        end
+      end
+
+      it "includes reset_at attribute when X-RateLimit-Reset header present" do
+        reset_time = Time.now.to_i + 60
+        stubs.get("/test") { [429, {"X-RateLimit-Reset" => reset_time.to_s}, ""] }
+
+        expect {
+          connection.get("/test")
+        }.to raise_error(SecApi::RateLimitError) do |error|
+          expect(error.reset_at).to eq(Time.at(reset_time))
+        end
+      end
+
+      it "handles X-RateLimit-Reset timestamp in the past" do
+        past_time = Time.now.to_i - 60 # 60 seconds ago
+        stubs.get("/test") { [429, {"X-RateLimit-Reset" => past_time.to_s}, ""] }
+
+        expect {
+          connection.get("/test")
+        }.to raise_error(SecApi::RateLimitError) do |error|
+          expect(error.reset_at).to eq(Time.at(past_time))
+          # Message should still include the reset time even if past
+          expect(error.message).to include("Rate limit resets at")
+        end
+      end
+
+      it "parses Retry-After HTTP-date format" do
+        future_time = Time.now + 120
+        http_date = future_time.httpdate
+        stubs.get("/test") { [429, {"Retry-After" => http_date}, ""] }
+
+        expect {
+          connection.get("/test")
+        }.to raise_error(SecApi::RateLimitError) do |error|
+          # Should be approximately 120 seconds (allow some variance for test timing)
+          expect(error.retry_after).to be_within(5).of(120)
+        end
+      end
+
+      it "prefers Retry-After over X-RateLimit-Reset in message" do
+        stubs.get("/test") do
+          [429, {"Retry-After" => "30", "X-RateLimit-Reset" => "1640000000"}, ""]
+        end
+
+        expect {
+          connection.get("/test")
+        }.to raise_error(SecApi::RateLimitError) do |error|
+          expect(error.retry_after).to eq(30)
+          expect(error.reset_at).to eq(Time.at(1640000000))
+          expect(error.message).to include("Retry after 30 seconds")
+          expect(error.message).not_to include("resets at")
+        end
+      end
+
+      it "handles invalid Retry-After header gracefully" do
+        stubs.get("/test") { [429, {"Retry-After" => "invalid-value"}, ""] }
+
+        expect {
+          connection.get("/test")
+        }.to raise_error(SecApi::RateLimitError) do |error|
+          expect(error.retry_after).to be_nil
+          expect(error.message).not_to include("Retry after")
+        end
+      end
+
+      it "handles negative Retry-After value gracefully" do
+        stubs.get("/test") { [429, {"Retry-After" => "-30"}, ""] }
+
+        expect {
+          connection.get("/test")
+        }.to raise_error(SecApi::RateLimitError) do |error|
+          # Negative values are parsed as integers but semantically invalid
+          expect(error.retry_after).to eq(-30)
+        end
       end
     end
 
@@ -355,7 +440,7 @@ RSpec.describe SecApi::Middleware::ErrorHandler do
       expect {
         connection.get("/test")
       }.to raise_error(SecApi::RateLimitError) do |error|
-        expect(error.message).to include("automatic")
+        expect(error.message.downcase).to include("automatic")
         expect(error.message.length).to be > 20 # Has meaningful context
       end
     end

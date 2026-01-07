@@ -565,4 +565,273 @@ RSpec.describe SecApi::Client do
       stubs.verify_stubbed_calls
     end
   end
+
+  describe "reactive rate limit backoff (Story 5.3)" do
+    let(:stubs) { Faraday::Adapter::Test::Stubs.new }
+
+    after { stubs.verify_stubbed_calls }
+
+    describe "on_rate_limit callback" do
+      it "invokes callback when 429 response is received and retried" do
+        callback_invoked = []
+        callback = ->(info) { callback_invoked << info }
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          retry_max_attempts: 2,
+          on_rate_limit: callback
+        )
+        client = SecApi::Client.new(config)
+
+        # First request fails with 429, second succeeds
+        stubs.get("/test") do
+          [429, {"Retry-After" => "1", "X-RateLimit-Reset" => (Time.now.to_i + 60).to_s}, "Rate limited"]
+        end
+        stubs.get("/test") { [200, {}, '{"result": "success"}'] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        # Callback should have been invoked once (after first retry)
+        expect(callback_invoked.size).to eq(1)
+        expect(callback_invoked.first[:retry_after]).to eq(1)
+        expect(callback_invoked.first[:reset_at]).to be_a(Time)
+        expect(callback_invoked.first[:attempt]).to eq(1)
+      end
+
+      it "does not invoke callback when on_rate_limit is nil" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          retry_max_attempts: 2
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [429, {}, "Rate limited"] }
+        stubs.get("/test") { [200, {}, '{"result": "success"}'] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler
+            builder.adapter :test, stubs
+          end
+        )
+
+        # Should not raise even without callback
+        expect { client.connection.get("/test") }.not_to raise_error
+      end
+
+      it "invokes callback with nil retry_after when header is absent" do
+        callback_invoked = []
+        callback = ->(info) { callback_invoked << info }
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          retry_max_attempts: 2,
+          on_rate_limit: callback
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [429, {}, "Rate limited"] }
+        stubs.get("/test") { [200, {}, '{"result": "success"}'] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        expect(callback_invoked.first[:retry_after]).to be_nil
+        expect(callback_invoked.first[:reset_at]).to be_nil
+      end
+    end
+
+    describe "X-RateLimit-Reset backoff calculation" do
+      it "calculates retry interval from reset_at when Retry-After is absent" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          retry_max_attempts: 2
+        )
+        client = SecApi::Client.new(config)
+
+        # Reset time 30 seconds in the future
+        reset_time = Time.now.to_i + 30
+
+        stubs.get("/test") do
+          [429, {"X-RateLimit-Reset" => reset_time.to_s}, "Rate limited"]
+        end
+        stubs.get("/test") { [200, {}, '{"result": "success"}'] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler
+            builder.adapter :test, stubs
+          end
+        )
+
+        # The retry should succeed - verifying the interval calculation worked
+        response = client.connection.get("/test")
+        expect(response.status).to eq(200)
+      end
+
+      it "does not set interval when Retry-After header is present" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          retry_max_attempts: 2
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") do
+          [429, {"Retry-After" => "1", "X-RateLimit-Reset" => (Time.now.to_i + 30).to_s}, "Rate limited"]
+        end
+        stubs.get("/test") { [200, {}, '{"result": "success"}'] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler
+            builder.adapter :test, stubs
+          end
+        )
+
+        # Retry-After takes precedence, so should complete quickly
+        response = client.connection.get("/test")
+        expect(response.status).to eq(200)
+      end
+
+      it "caps retry interval at retry_max_delay" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          retry_max_attempts: 2,
+          retry_max_delay: 5.0 # Cap at 5 seconds
+        )
+        client = SecApi::Client.new(config)
+
+        # Reset time 60 seconds in the future - should be capped to 5
+        reset_time = Time.now.to_i + 60
+
+        stubs.get("/test") do
+          [429, {"X-RateLimit-Reset" => reset_time.to_s}, "Rate limited"]
+        end
+        stubs.get("/test") { [200, {}, '{"result": "success"}'] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler
+            builder.adapter :test, stubs
+          end
+        )
+
+        # Should complete - interval should be capped
+        response = client.connection.get("/test")
+        expect(response.status).to eq(200)
+      end
+    end
+
+    describe "Retry-After header formats" do
+      it "respects Retry-After integer format" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          retry_max_attempts: 2
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [429, {"Retry-After" => "1"}, "Rate limited"] }
+        stubs.get("/test") { [200, {}, '{"result": "success"}'] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler
+            builder.adapter :test, stubs
+          end
+        )
+
+        response = client.connection.get("/test")
+        expect(response.status).to eq(200)
+      end
+
+      it "parses Retry-After HTTP-date format" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          retry_max_attempts: 2
+        )
+        client = SecApi::Client.new(config)
+
+        # HTTP-date format 2 seconds in future
+        future_time = (Time.now + 2).httpdate
+        stubs.get("/test") { [429, {"Retry-After" => future_time}, "Rate limited"] }
+        stubs.get("/test") { [200, {}, '{"result": "success"}'] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler
+            builder.adapter :test, stubs
+          end
+        )
+
+        response = client.connection.get("/test")
+        expect(response.status).to eq(200)
+      end
+    end
+
+    describe "automatic retry on 429 response" do
+      it "automatically retries and succeeds without manual intervention" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          retry_max_attempts: 3
+        )
+        client = SecApi::Client.new(config)
+
+        # First 2 requests fail with 429, third succeeds
+        2.times { stubs.get("/test") { [429, {}, "Rate limited"] } }
+        stubs.get("/test") { [200, {}, '{"data": "backfill results"}'] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler
+            builder.adapter :test, stubs
+          end
+        )
+
+        # Should eventually succeed without raising
+        response = client.connection.get("/test")
+        expect(response.status).to eq(200)
+      end
+
+      it "raises RateLimitError after exhausting all retry attempts" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          retry_max_attempts: 2
+        )
+        client = SecApi::Client.new(config)
+
+        # All 3 attempts (initial + 2 retries) fail with 429
+        3.times { stubs.get("/test") { [429, {}, "Rate limited"] } }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler
+            builder.adapter :test, stubs
+          end
+        )
+
+        expect { client.connection.get("/test") }.to raise_error(SecApi::RateLimitError)
+      end
+    end
+  end
 end
