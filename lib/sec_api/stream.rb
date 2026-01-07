@@ -54,32 +54,58 @@ module SecApi
       @ws = nil
       @running = false
       @callback = nil
+      @tickers = nil
+      @form_types = nil
       @mutex = Mutex.new
     end
 
-    # Subscribe to real-time filing notifications.
+    # Subscribe to real-time filing notifications with optional filtering.
     #
     # Establishes a WebSocket connection to sec-api.io's Stream API and
     # invokes the provided block for each filing received. This method
     # blocks while the connection is open.
     #
-    # @yield [SecApi::Objects::StreamFiling] Block called for each filing
+    # Filtering is performed client-side (sec-api.io streams all filings).
+    # When both tickers and form_types are specified, AND logic is applied.
+    #
+    # @param tickers [Array<String>, String, nil] Filter by ticker symbols (case-insensitive).
+    #   Accepts array or single string.
+    # @param form_types [Array<String>, String, nil] Filter by form types (case-insensitive).
+    #   Amendments are matched (e.g., "10-K" filter matches "10-K/A")
+    # @yield [SecApi::Objects::StreamFiling] Block called for each matching filing
     # @return [void]
     # @raise [ArgumentError] when no block is provided
     # @raise [SecApi::NetworkError] on connection failure
     # @raise [SecApi::AuthenticationError] on authentication failure (invalid API key)
     #
-    # @example Basic subscription
+    # @example Basic subscription (all filings)
     #   client.stream.subscribe do |filing|
     #     puts "#{filing.ticker}: #{filing.form_type} filed at #{filing.filed_at}"
+    #   end
+    #
+    # @example Filter by tickers
+    #   client.stream.subscribe(tickers: ["AAPL", "TSLA"]) do |filing|
+    #     puts "#{filing.ticker}: #{filing.form_type}"
+    #   end
+    #
+    # @example Filter by form types
+    #   client.stream.subscribe(form_types: ["10-K", "8-K"]) do |filing|
+    #     process_material_event(filing)
+    #   end
+    #
+    # @example Combined filters (AND logic)
+    #   client.stream.subscribe(tickers: ["AAPL"], form_types: ["10-K", "10-Q"]) do |filing|
+    #     analyze_apple_financials(filing)
     #   end
     #
     # @example Non-blocking subscription in separate thread
     #   Thread.new { client.stream.subscribe { |f| queue.push(f) } }
     #
-    def subscribe(&block)
+    def subscribe(tickers: nil, form_types: nil, &block)
       raise ArgumentError, "Block required for subscribe" unless block_given?
 
+      @tickers = normalize_filter(tickers)
+      @form_types = normalize_filter(form_types)
       @callback = block
       connect
     end
@@ -113,6 +139,23 @@ module SecApi
       @mutex.synchronize do
         @running && @ws && @ws.ready_state == Faye::WebSocket::API::OPEN
       end
+    end
+
+    # Returns the current filter configuration.
+    #
+    # Useful for debugging and monitoring to inspect which filters are active.
+    #
+    # @return [Hash] Hash with :tickers and :form_types keys
+    #
+    # @example
+    #   stream.subscribe(tickers: ["AAPL"]) { |f| }
+    #   stream.filters # => { tickers: ["AAPL"], form_types: nil }
+    #
+    def filters
+      {
+        tickers: @tickers,
+        form_types: @form_types
+      }
     end
 
     private
@@ -180,6 +223,10 @@ module SecApi
         break unless @running
 
         filing = Objects::StreamFiling.new(transform_keys(filing_data))
+
+        # Apply filters before callback (Story 6.2)
+        next unless matches_filters?(filing)
+
         @callback.call(filing)
       end
     rescue JSON::ParserError => e
@@ -274,6 +321,68 @@ module SecApi
         @client.config.logger.send(log_level) { log_data.to_json }
       rescue
         # Don't let logging errors break message processing
+      end
+    end
+
+    # Normalizes filter to uppercase strings for case-insensitive matching.
+    #
+    # Accepts an array of strings or a single string value. Single values
+    # are wrapped in an array for convenience. Duplicates are removed.
+    #
+    # @param filter [Array<String>, String, nil] Filter value(s)
+    # @return [Array<String>, nil] Normalized uppercase array, or nil if empty/nil
+    # @api private
+    def normalize_filter(filter)
+      return nil if filter.nil?
+
+      # Convert to array (handles single string input)
+      values = Array(filter)
+      return nil if values.empty?
+
+      values.map { |f| f.to_s.upcase }.uniq
+    end
+
+    # Checks if filing matches all configured filters (AND logic).
+    #
+    # @param filing [SecApi::Objects::StreamFiling] The filing to check
+    # @return [Boolean] true if filing passes all filters
+    # @api private
+    def matches_filters?(filing)
+      matches_ticker_filter?(filing) && matches_form_type_filter?(filing)
+    end
+
+    # Checks if filing matches the ticker filter.
+    #
+    # @param filing [SecApi::Objects::StreamFiling] The filing to check
+    # @return [Boolean] true if filing passes the ticker filter
+    # @api private
+    def matches_ticker_filter?(filing)
+      return true if @tickers.nil?  # No filter = pass all
+
+      ticker = filing.ticker&.upcase
+      return true if ticker.nil?  # No ticker in filing = pass through
+
+      @tickers.include?(ticker)
+    end
+
+    # Checks if filing matches the form_type filter.
+    #
+    # Amendments are handled specially: a filter for "10-K" will match both
+    # "10-K" and "10-K/A" filings. However, a filter for "10-K/A" only matches
+    # "10-K/A", not "10-K".
+    #
+    # @param filing [SecApi::Objects::StreamFiling] The filing to check
+    # @return [Boolean] true if filing passes the form_type filter
+    # @api private
+    def matches_form_type_filter?(filing)
+      return true if @form_types.nil?  # No filter = pass all
+
+      form_type = filing.form_type&.upcase
+      return false if form_type.nil?  # No form type = filter out
+
+      # Match exact or base form type (10-K/A matches 10-K filter)
+      @form_types.any? do |filter|
+        form_type == filter || form_type.start_with?("#{filter}/")
       end
     end
   end

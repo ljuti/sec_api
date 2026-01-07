@@ -241,6 +241,307 @@ RSpec.describe SecApi::Stream do
     end
   end
 
+  describe "#subscribe with filter parameters (Story 6.2)" do
+    describe "method signature" do
+      before do
+        allow(stream).to receive(:connect)
+      end
+
+      it "accepts tickers keyword argument" do
+        expect { stream.subscribe(tickers: ["AAPL"]) { |f| } }.not_to raise_error
+      end
+
+      it "accepts form_types keyword argument" do
+        expect { stream.subscribe(form_types: ["10-K"]) { |f| } }.not_to raise_error
+      end
+
+      it "accepts both tickers and form_types together" do
+        expect { stream.subscribe(tickers: ["AAPL"], form_types: ["10-K"]) { |f| } }.not_to raise_error
+      end
+
+      it "stores normalized tickers filter (uppercase)" do
+        stream.subscribe(tickers: ["aapl", "TSLA"]) { |f| }
+        expect(stream.instance_variable_get(:@tickers)).to eq(["AAPL", "TSLA"])
+      end
+
+      it "stores normalized form_types filter (uppercase)" do
+        stream.subscribe(form_types: ["10-k", "8-K"]) { |f| }
+        expect(stream.instance_variable_get(:@form_types)).to eq(["10-K", "8-K"])
+      end
+
+      it "treats empty array as nil (no filter)" do
+        stream.subscribe(tickers: [], form_types: []) { |f| }
+        expect(stream.instance_variable_get(:@tickers)).to be_nil
+        expect(stream.instance_variable_get(:@form_types)).to be_nil
+      end
+
+      it "accepts single string ticker (convenience)" do
+        stream.subscribe(tickers: "AAPL") { |f| }
+        expect(stream.instance_variable_get(:@tickers)).to eq(["AAPL"])
+      end
+
+      it "accepts single string form_type (convenience)" do
+        stream.subscribe(form_types: "10-K") { |f| }
+        expect(stream.instance_variable_get(:@form_types)).to eq(["10-K"])
+      end
+
+      it "deduplicates filter values" do
+        stream.subscribe(tickers: ["AAPL", "aapl", "AAPL"]) { |f| }
+        expect(stream.instance_variable_get(:@tickers)).to eq(["AAPL"])
+      end
+
+      it "deduplicates form_types filter values" do
+        stream.subscribe(form_types: ["10-K", "10-k", "10-K"]) { |f| }
+        expect(stream.instance_variable_get(:@form_types)).to eq(["10-K"])
+      end
+
+      it "maintains backwards compatibility (no args)" do
+        stream.subscribe { |f| }
+        expect(stream.instance_variable_get(:@tickers)).to be_nil
+        expect(stream.instance_variable_get(:@form_types)).to be_nil
+      end
+    end
+
+    describe "ticker filtering (AC: #1)" do
+      let(:aapl_filing) do
+        {"accessionNo" => "001", "formType" => "10-K", "filedAt" => "2024-01-15", "cik" => "320193", "ticker" => "AAPL", "companyName" => "Apple Inc.", "linkToFilingDetails" => "https://..."}
+      end
+      let(:tsla_filing) do
+        {"accessionNo" => "002", "formType" => "8-K", "filedAt" => "2024-01-15", "cik" => "1318605", "ticker" => "TSLA", "companyName" => "Tesla Inc.", "linkToFilingDetails" => "https://..."}
+      end
+      let(:msft_filing) do
+        {"accessionNo" => "003", "formType" => "10-Q", "filedAt" => "2024-01-15", "cik" => "789019", "ticker" => "MSFT", "companyName" => "Microsoft Corp.", "linkToFilingDetails" => "https://..."}
+      end
+
+      before do
+        allow(stream).to receive(:connect)
+        stream.instance_variable_set(:@running, true)
+      end
+
+      it "delivers only matching ticker filings" do
+        received = []
+        stream.subscribe(tickers: ["AAPL"]) { |f| received << f }
+        stream.send(:handle_message, [aapl_filing, tsla_filing, msft_filing].to_json)
+
+        expect(received.size).to eq(1)
+        expect(received.first.ticker).to eq("AAPL")
+      end
+
+      it "matches multiple tickers" do
+        received = []
+        stream.subscribe(tickers: ["AAPL", "TSLA"]) { |f| received << f }
+        stream.send(:handle_message, [aapl_filing, tsla_filing, msft_filing].to_json)
+
+        expect(received.size).to eq(2)
+        expect(received.map(&:ticker)).to contain_exactly("AAPL", "TSLA")
+      end
+
+      it "is case-insensitive" do
+        received = []
+        stream.subscribe(tickers: ["aapl"]) { |f| received << f }
+        stream.send(:handle_message, [aapl_filing].to_json)
+
+        expect(received.size).to eq(1)
+      end
+
+      it "handles nil ticker in filing (passes through)" do
+        no_ticker_filing = {"accessionNo" => "004", "formType" => "8-K", "filedAt" => "2024-01-15", "cik" => "123456", "companyName" => "No Ticker Corp.", "linkToFilingDetails" => "https://..."}
+        received = []
+        stream.subscribe(tickers: ["AAPL"]) { |f| received << f }
+        stream.send(:handle_message, [no_ticker_filing].to_json)
+
+        expect(received.size).to eq(1)  # nil ticker passes through
+      end
+
+      it "passes all filings when no ticker filter" do
+        received = []
+        stream.subscribe { |f| received << f }
+        stream.send(:handle_message, [aapl_filing, tsla_filing, msft_filing].to_json)
+
+        expect(received.size).to eq(3)
+      end
+    end
+
+    describe "form_type filtering (AC: #2)" do
+      let(:filing_10k) do
+        {"accessionNo" => "001", "formType" => "10-K", "filedAt" => "2024-01-15", "cik" => "320193", "ticker" => "AAPL", "companyName" => "Apple Inc.", "linkToFilingDetails" => "https://..."}
+      end
+      let(:filing_8k) do
+        {"accessionNo" => "002", "formType" => "8-K", "filedAt" => "2024-01-15", "cik" => "320193", "ticker" => "AAPL", "companyName" => "Apple Inc.", "linkToFilingDetails" => "https://..."}
+      end
+      let(:filing_10q) do
+        {"accessionNo" => "003", "formType" => "10-Q", "filedAt" => "2024-01-15", "cik" => "320193", "ticker" => "AAPL", "companyName" => "Apple Inc.", "linkToFilingDetails" => "https://..."}
+      end
+      let(:filing_10ka) do
+        {"accessionNo" => "004", "formType" => "10-K/A", "filedAt" => "2024-01-15", "cik" => "320193", "ticker" => "AAPL", "companyName" => "Apple Inc.", "linkToFilingDetails" => "https://..."}
+      end
+
+      before do
+        allow(stream).to receive(:connect)
+        stream.instance_variable_set(:@running, true)
+      end
+
+      it "delivers only matching form type filings" do
+        received = []
+        stream.subscribe(form_types: ["10-K"]) { |f| received << f }
+        stream.send(:handle_message, [filing_10k, filing_8k, filing_10q].to_json)
+
+        expect(received.size).to eq(1)
+        expect(received.first.form_type).to eq("10-K")
+      end
+
+      it "matches multiple form types" do
+        received = []
+        stream.subscribe(form_types: ["10-K", "8-K"]) { |f| received << f }
+        stream.send(:handle_message, [filing_10k, filing_8k, filing_10q].to_json)
+
+        expect(received.size).to eq(2)
+        expect(received.map(&:form_type)).to contain_exactly("10-K", "8-K")
+      end
+
+      it "is case-insensitive" do
+        received = []
+        stream.subscribe(form_types: ["10-k"]) { |f| received << f }
+        stream.send(:handle_message, [filing_10k].to_json)
+
+        expect(received.size).to eq(1)
+      end
+
+      it "matches amendments (10-K/A matches 10-K filter)" do
+        received = []
+        stream.subscribe(form_types: ["10-K"]) { |f| received << f }
+        stream.send(:handle_message, [filing_10k, filing_10ka].to_json)
+
+        expect(received.size).to eq(2)
+        expect(received.map(&:form_type)).to contain_exactly("10-K", "10-K/A")
+      end
+
+      it "does not match 10-K when filtering for 10-K/A only" do
+        received = []
+        stream.subscribe(form_types: ["10-K/A"]) { |f| received << f }
+        stream.send(:handle_message, [filing_10k, filing_10ka].to_json)
+
+        expect(received.size).to eq(1)
+        expect(received.first.form_type).to eq("10-K/A")
+      end
+
+      it "filters out filings with nil form_type" do
+        no_form_filing = {"accessionNo" => "005", "filedAt" => "2024-01-15", "cik" => "123456", "companyName" => "Unknown Corp.", "linkToFilingDetails" => "https://..."}
+        received = []
+        stream.subscribe(form_types: ["10-K"]) { |f| received << f }
+        stream.send(:handle_message, [no_form_filing].to_json)
+
+        expect(received.size).to eq(0)
+      end
+
+      it "passes all filings when no form_type filter" do
+        received = []
+        stream.subscribe { |f| received << f }
+        stream.send(:handle_message, [filing_10k, filing_8k, filing_10q].to_json)
+
+        expect(received.size).to eq(3)
+      end
+    end
+
+    describe "combined filtering (AC: #3)" do
+      let(:aapl_10k) do
+        {"accessionNo" => "001", "formType" => "10-K", "filedAt" => "2024-01-15", "cik" => "320193", "ticker" => "AAPL", "companyName" => "Apple Inc.", "linkToFilingDetails" => "https://..."}
+      end
+      let(:aapl_8k) do
+        {"accessionNo" => "002", "formType" => "8-K", "filedAt" => "2024-01-15", "cik" => "320193", "ticker" => "AAPL", "companyName" => "Apple Inc.", "linkToFilingDetails" => "https://..."}
+      end
+      let(:tsla_10k) do
+        {"accessionNo" => "003", "formType" => "10-K", "filedAt" => "2024-01-15", "cik" => "1318605", "ticker" => "TSLA", "companyName" => "Tesla Inc.", "linkToFilingDetails" => "https://..."}
+      end
+      let(:msft_8k) do
+        {"accessionNo" => "004", "formType" => "8-K", "filedAt" => "2024-01-15", "cik" => "789019", "ticker" => "MSFT", "companyName" => "Microsoft Corp.", "linkToFilingDetails" => "https://..."}
+      end
+
+      before do
+        allow(stream).to receive(:connect)
+        stream.instance_variable_set(:@running, true)
+      end
+
+      it "applies AND logic for ticker and form_type filters" do
+        received = []
+        stream.subscribe(tickers: ["AAPL"], form_types: ["10-K"]) { |f| received << f }
+        stream.send(:handle_message, [aapl_10k, aapl_8k, tsla_10k, msft_8k].to_json)
+
+        expect(received.size).to eq(1)
+        expect(received.first.ticker).to eq("AAPL")
+        expect(received.first.form_type).to eq("10-K")
+      end
+
+      it "applies AND logic with multiple values in each filter" do
+        received = []
+        stream.subscribe(tickers: ["AAPL", "TSLA"], form_types: ["10-K", "10-Q"]) { |f| received << f }
+        stream.send(:handle_message, [aapl_10k, aapl_8k, tsla_10k, msft_8k].to_json)
+
+        expect(received.size).to eq(2)
+        expect(received.map(&:ticker)).to contain_exactly("AAPL", "TSLA")
+        expect(received.map(&:form_type)).to all(eq("10-K"))
+      end
+
+      it "uses matches_filters? for combined check" do
+        allow(stream).to receive(:connect)
+        stream.subscribe(tickers: ["AAPL"], form_types: ["10-K"]) { |f| }
+
+        filing = SecApi::Objects::StreamFiling.new(
+          accession_no: "001",
+          form_type: "10-K",
+          filed_at: "2024-01-15",
+          cik: "320193",
+          ticker: "AAPL",
+          company_name: "Apple Inc.",
+          link_to_filing_details: "https://..."
+        )
+        non_matching = SecApi::Objects::StreamFiling.new(
+          accession_no: "002",
+          form_type: "8-K",
+          filed_at: "2024-01-15",
+          cik: "320193",
+          ticker: "AAPL",
+          company_name: "Apple Inc.",
+          link_to_filing_details: "https://..."
+        )
+
+        expect(stream.send(:matches_filters?, filing)).to be true
+        expect(stream.send(:matches_filters?, non_matching)).to be false
+      end
+    end
+
+    describe "#filters method (AC: #5)" do
+      before do
+        allow(stream).to receive(:connect)
+      end
+
+      it "returns current filter configuration with tickers" do
+        stream.subscribe(tickers: ["AAPL", "TSLA"]) { |f| }
+        expect(stream.filters).to eq({tickers: ["AAPL", "TSLA"], form_types: nil})
+      end
+
+      it "returns current filter configuration with form_types" do
+        stream.subscribe(form_types: ["10-K", "8-K"]) { |f| }
+        expect(stream.filters).to eq({tickers: nil, form_types: ["10-K", "8-K"]})
+      end
+
+      it "returns current filter configuration with both" do
+        stream.subscribe(tickers: ["AAPL"], form_types: ["10-K"]) { |f| }
+        expect(stream.filters).to eq({tickers: ["AAPL"], form_types: ["10-K"]})
+      end
+
+      it "returns nil values when no filters configured" do
+        stream.subscribe { |f| }
+        expect(stream.filters).to eq({tickers: nil, form_types: nil})
+      end
+
+      it "returns normalized uppercase values" do
+        stream.subscribe(tickers: ["aapl"], form_types: ["10-k"]) { |f| }
+        expect(stream.filters).to eq({tickers: ["AAPL"], form_types: ["10-K"]})
+      end
+    end
+  end
+
   describe "ping/pong handling (AC: #2, Task 3)" do
     # Ping/pong is handled automatically by faye-websocket library.
     # The sec-api.io server pings every 25 seconds and expects pong within 5 seconds.
