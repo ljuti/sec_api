@@ -53,6 +53,26 @@ module SecApi
       @_xbrl ||= Xbrl.new(self)
     end
 
+    # Returns the Stream proxy for real-time filing notifications via WebSocket.
+    #
+    # @return [SecApi::Stream] Stream proxy instance for WebSocket subscriptions
+    #
+    # @example Subscribe to real-time filings
+    #   client = SecApi::Client.new
+    #   client.stream.subscribe do |filing|
+    #     puts "New filing: #{filing.ticker} - #{filing.form_type}"
+    #   end
+    #
+    # @example Close the streaming connection
+    #   client.stream.close
+    #
+    # @note The subscribe method blocks while receiving events.
+    #   For non-blocking operation, run in a separate thread.
+    #
+    def stream
+      @_stream ||= Stream.new(self)
+    end
+
     # Returns the current rate limit state from the most recent API response.
     #
     # The state is automatically updated after each API request based on

@@ -288,6 +288,8 @@ All options can be set via YAML or environment variables:
   - `faraday-retry` - Automatic retry middleware
   - `anyway_config` - Configuration management
   - `dry-struct` - Immutable value objects
+  - `faye-websocket` - WebSocket client for streaming API
+  - `eventmachine` - Event-driven I/O (required by faye-websocket)
 
 ## Development
 

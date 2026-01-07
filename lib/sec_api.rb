@@ -32,6 +32,7 @@ require "sec_api/objects/period"
 require "sec_api/objects/fact"
 require "sec_api/objects/xbrl_data"
 require "sec_api/objects/extracted_data"
+require "sec_api/objects/stream_filing"
 require "sec_api/collections/filings"
 require "sec_api/collections/fulltext_results"
 require "sec_api/query"
@@ -40,6 +41,7 @@ require "sec_api/mapping"
 require "sec_api/config"
 require "sec_api/client"
 require "sec_api/xbrl"
+require "sec_api/stream"
 
 module SecApi
   # Your code goes here...

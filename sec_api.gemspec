@@ -35,6 +35,8 @@ Gem::Specification.new do |spec|
   spec.add_dependency "faraday-retry"
   spec.add_dependency "anyway_config"
   spec.add_dependency "dry-struct"
+  spec.add_dependency "faye-websocket", "~> 0.11"
+  spec.add_dependency "eventmachine", "~> 1.2"
 
   # For more information and examples about making a new gem, check out our
   # guide at: https://bundler.io/guides/creating_gem.html
