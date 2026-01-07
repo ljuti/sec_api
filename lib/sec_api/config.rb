@@ -1,6 +1,37 @@
 require "anyway_config"
 
 module SecApi
+  # Configuration for the SecApi client.
+  #
+  # Supports configuration via:
+  # - Constructor arguments
+  # - YAML file (config/secapi.yml)
+  # - Environment variables (SECAPI_API_KEY, SECAPI_BASE_URL, etc.)
+  #
+  # @example Basic configuration
+  #   config = SecApi::Config.new(api_key: "your_api_key")
+  #
+  # @example With custom rate limit settings
+  #   config = SecApi::Config.new(
+  #     api_key: "your_api_key",
+  #     rate_limit_threshold: 0.2,  # Throttle at 20% remaining
+  #     on_throttle: ->(info) { Rails.logger.warn("Throttling: #{info}") }
+  #   )
+  #
+  # @!attribute [rw] rate_limit_threshold
+  #   @return [Float] Threshold for proactive throttling (0.0-1.0). When the
+  #     percentage of remaining requests drops below this value, the middleware
+  #     will sleep until the rate limit window resets. Default is 0.1 (10%).
+  #     Set to 0.0 to disable proactive throttling, or 1.0 to always throttle.
+  #
+  # @!attribute [rw] on_throttle
+  #   @return [Proc, nil] Optional callback invoked when proactive throttling occurs.
+  #     Receives a hash with the following keys:
+  #     - :remaining [Integer] - Requests remaining in current window
+  #     - :limit [Integer] - Total requests allowed per window
+  #     - :delay [Float] - Seconds the request will be delayed
+  #     - :reset_at [Time] - When the rate limit window resets
+  #
   class Config < Anyway::Config
     config_name :secapi
 
@@ -12,7 +43,8 @@ module SecApi
       :retry_backoff_factor,
       :request_timeout,
       :rate_limit_threshold,
-      :on_retry
+      :on_retry,
+      :on_throttle
 
     # Sensible defaults
     def initialize(*)
@@ -27,6 +59,9 @@ module SecApi
     end
 
     # Validation called by Client
+    #
+    # @raise [ConfigurationError] if any configuration value is invalid
+    # @return [void]
     def validate!
       if api_key.nil? || api_key.empty?
         raise ConfigurationError, missing_api_key_message
@@ -55,6 +90,11 @@ module SecApi
 
       if retry_backoff_factor < 2
         raise ConfigurationError, "retry_backoff_factor must be >= 2 for exponential backoff (use 2 for standard exponential: 1s, 2s, 4s, 8s...)"
+      end
+
+      # Rate limit threshold validation
+      if rate_limit_threshold < 0 || rate_limit_threshold > 1
+        raise ConfigurationError, "rate_limit_threshold must be between 0.0 and 1.0"
       end
     end
 

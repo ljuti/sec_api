@@ -103,9 +103,13 @@ module SecApi
         conn.request :retry, retry_options
 
         # Rate limiter middleware - extracts X-RateLimit-* headers from responses
+        # and proactively throttles when approaching rate limits.
         # Positioned after Retry to capture final response headers (not intermediate retries)
         # Positioned before ErrorHandler to capture headers even from 429 responses
-        conn.use Middleware::RateLimiter, state_store: @_rate_limit_tracker
+        conn.use Middleware::RateLimiter,
+          state_store: @_rate_limit_tracker,
+          threshold: @_config.rate_limit_threshold,
+          on_throttle: @_config.on_throttle
 
         # Error handler middleware - converts HTTP errors to typed exceptions
         # Positioned AFTER retry so non-retryable errors (401, 404, etc.) fail immediately

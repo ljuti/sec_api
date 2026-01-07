@@ -220,6 +220,74 @@ RSpec.describe SecApi::Client do
       # RateLimiter should be before ErrorHandler (to capture headers from 429 responses)
       expect(rate_limiter_index).to be < error_handler_index
     end
+
+    it "wires rate_limit_threshold from Config to RateLimiter middleware" do
+      # Test with 25% threshold - should throttle at 24% remaining but not at 25%
+      custom_config = SecApi::Config.new(api_key: "test_api_key_valid", rate_limit_threshold: 0.25)
+      custom_client = SecApi::Client.new(custom_config)
+
+      # Set up state at 24% remaining (below 25% threshold)
+      custom_client.instance_variable_get(:@_rate_limit_tracker).update(
+        limit: 100,
+        remaining: 24,
+        reset_at: Time.now + 60
+      )
+
+      stubs = Faraday::Adapter::Test::Stubs.new
+      stubs.get("/test") { [200, {}, "{}"] }
+
+      allow(custom_client).to receive(:connection).and_return(
+        Faraday.new do |conn|
+          conn.use SecApi::Middleware::RateLimiter,
+            state_store: custom_client.instance_variable_get(:@_rate_limit_tracker),
+            threshold: custom_config.rate_limit_threshold
+          conn.adapter :test, stubs
+        end
+      )
+
+      # Should throttle because 24% < 25% threshold
+      expect_any_instance_of(SecApi::Middleware::RateLimiter).to receive(:sleep).with(a_value > 0)
+      custom_client.connection.get("/test")
+
+      stubs.verify_stubbed_calls
+    end
+
+    it "wires on_throttle callback from Config to RateLimiter middleware" do
+      callback_invoked = []
+      callback = ->(info) { callback_invoked << info }
+      custom_config = SecApi::Config.new(api_key: "test_api_key_valid", on_throttle: callback)
+      custom_client = SecApi::Client.new(custom_config)
+
+      # Set up state below default threshold to trigger throttling
+      custom_client.instance_variable_get(:@_rate_limit_tracker).update(
+        limit: 100,
+        remaining: 5,
+        reset_at: Time.now + 30
+      )
+
+      stubs = Faraday::Adapter::Test::Stubs.new
+      stubs.get("/test") { [200, {}, "{}"] }
+
+      allow(custom_client).to receive(:connection).and_return(
+        Faraday.new do |conn|
+          conn.use SecApi::Middleware::RateLimiter,
+            state_store: custom_client.instance_variable_get(:@_rate_limit_tracker),
+            threshold: custom_config.rate_limit_threshold,
+            on_throttle: custom_config.on_throttle
+          conn.adapter :test, stubs
+        end
+      )
+
+      allow_any_instance_of(SecApi::Middleware::RateLimiter).to receive(:sleep)
+      custom_client.connection.get("/test")
+
+      # Callback should have been invoked with throttle info
+      expect(callback_invoked.size).to eq(1)
+      expect(callback_invoked.first[:remaining]).to eq(5)
+      expect(callback_invoked.first[:limit]).to eq(100)
+
+      stubs.verify_stubbed_calls
+    end
   end
 
   describe "retry middleware behavior" do

@@ -281,5 +281,53 @@ RSpec.describe SecApi::Config do
         expect { config.validate! }.not_to raise_error
       end
     end
+
+    context "when rate_limit_threshold is invalid" do
+      it "raises ConfigurationError when threshold is negative" do
+        config = SecApi::Config.new(api_key: "valid_test_key_123", rate_limit_threshold: -0.1)
+        expect { config.validate! }.to raise_error(
+          SecApi::ConfigurationError,
+          /rate_limit_threshold must be between 0\.0 and 1\.0/
+        )
+      end
+
+      it "raises ConfigurationError when threshold is greater than 1.0" do
+        config = SecApi::Config.new(api_key: "valid_test_key_123", rate_limit_threshold: 1.5)
+        expect { config.validate! }.to raise_error(
+          SecApi::ConfigurationError,
+          /rate_limit_threshold must be between 0\.0 and 1\.0/
+        )
+      end
+    end
+
+    context "when rate_limit_threshold is valid" do
+      it "accepts 0.0 (never throttle)" do
+        config = SecApi::Config.new(api_key: "valid_test_key_123", rate_limit_threshold: 0.0)
+        expect { config.validate! }.not_to raise_error
+      end
+
+      it "accepts 1.0 (always throttle)" do
+        config = SecApi::Config.new(api_key: "valid_test_key_123", rate_limit_threshold: 1.0)
+        expect { config.validate! }.not_to raise_error
+      end
+
+      it "accepts 0.2 (20% threshold)" do
+        config = SecApi::Config.new(api_key: "valid_test_key_123", rate_limit_threshold: 0.2)
+        expect { config.validate! }.not_to raise_error
+      end
+    end
+  end
+
+  describe "on_throttle callback" do
+    it "accepts a callback proc" do
+      callback = ->(info) { puts info }
+      config = SecApi::Config.new(api_key: "valid_test_key_123", on_throttle: callback)
+      expect(config.on_throttle).to eq(callback)
+    end
+
+    it "defaults to nil when not provided" do
+      config = SecApi::Config.new(api_key: "valid_test_key_123")
+      expect(config.on_throttle).to be_nil
+    end
   end
 end
