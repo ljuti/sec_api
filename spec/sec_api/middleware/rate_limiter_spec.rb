@@ -448,6 +448,42 @@ RSpec.describe SecApi::Middleware::RateLimiter do
         expect(info[:reset_at]).to eq(reset_time)
       end
 
+      it "includes request_id in callback info" do
+        reset_time = Time.now + 30
+        tracker.update(limit: 100, remaining: 5, reset_at: reset_time)
+
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow_any_instance_of(described_class).to receive(:sleep)
+        connection_with_callback.get("/test")
+
+        expect(callback_received.size).to eq(1)
+        info = callback_received.first
+        expect(info[:request_id]).to match(/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/)
+      end
+
+      it "generates unique request_id for each request" do
+        reset_time = Time.now + 30
+        tracker.update(limit: 100, remaining: 5, reset_at: reset_time)
+
+        # Include reset_at in response to ensure state is maintained for second request
+        stubs.get("/first") do
+          [200, {
+            "X-RateLimit-Limit" => "100",
+            "X-RateLimit-Remaining" => "4",
+            "X-RateLimit-Reset" => reset_time.to_i.to_s
+          }, "{}"]
+        end
+        stubs.get("/second") { [200, {}, "{}"] }
+
+        allow_any_instance_of(described_class).to receive(:sleep)
+        connection_with_callback.get("/first")
+        connection_with_callback.get("/second")
+
+        expect(callback_received.size).to eq(2)
+        expect(callback_received[0][:request_id]).not_to eq(callback_received[1][:request_id])
+      end
+
       it "does NOT invoke callback when not throttling" do
         # Above threshold - no throttling
         tracker.update(limit: 100, remaining: 50, reset_at: Time.now + 60)
@@ -470,6 +506,61 @@ RSpec.describe SecApi::Middleware::RateLimiter do
 
         allow_any_instance_of(described_class).to receive(:sleep)
         expect { connection_no_callback.get("/test") }.not_to raise_error
+      end
+
+      it "logs throttle event as JSON when logger is configured" do
+        log_output = StringIO.new
+        logger = Logger.new(log_output)
+        logger.formatter = ->(_, _, _, msg) { "#{msg}\n" }
+
+        connection_with_logging = Faraday.new do |conn|
+          conn.use described_class,
+            state_store: tracker,
+            threshold: 0.1,
+            logger: logger,
+            log_level: :info
+          conn.adapter :test, stubs
+        end
+
+        tracker.update(limit: 100, remaining: 5, reset_at: Time.now + 30)
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow_any_instance_of(described_class).to receive(:sleep)
+        connection_with_logging.get("/test")
+
+        log_output.rewind
+        log_line = log_output.read.strip
+        log_data = JSON.parse(log_line)
+
+        expect(log_data["event"]).to eq("secapi.rate_limit.throttle")
+        expect(log_data["request_id"]).to match(/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/)
+        expect(log_data["remaining"]).to eq(5)
+        expect(log_data["limit"]).to eq(100)
+        expect(log_data["delay"]).to be_a(Numeric)
+      end
+
+      it "does not break request when logger raises exception" do
+        failing_logger = instance_double(Logger)
+        allow(failing_logger).to receive(:info).and_raise(StandardError.new("Logger failed!"))
+
+        connection_with_failing_logger = Faraday.new do |conn|
+          conn.use described_class,
+            state_store: tracker,
+            threshold: 0.1,
+            logger: failing_logger,
+            log_level: :info
+          conn.adapter :test, stubs
+        end
+
+        tracker.update(limit: 100, remaining: 5, reset_at: Time.now + 30)
+        stubs.get("/test") { [200, {}, '{"result": "success"}'] }
+
+        allow_any_instance_of(described_class).to receive(:sleep)
+
+        # Should complete successfully despite logger error
+        response = connection_with_failing_logger.get("/test")
+        expect(response.status).to eq(200)
+        expect(response.body).to eq('{"result": "success"}')
       end
     end
 
@@ -705,6 +796,25 @@ RSpec.describe SecApi::Middleware::RateLimiter do
         expect(info[:reset_at]).to eq(reset_time)
       end
 
+      it "includes request_id in on_queue callback info" do
+        reset_time = Time.now + 0.1
+        tracker.update(limit: 100, remaining: 0, reset_at: reset_time)
+
+        stubs.get("/test") do
+          [200, {
+            "X-RateLimit-Limit" => "100",
+            "X-RateLimit-Remaining" => "99",
+            "X-RateLimit-Reset" => (Time.now + 60).to_i.to_s
+          }, "{}"]
+        end
+
+        connection_with_queueing.get("/test")
+
+        expect(queue_callback_log.size).to eq(1)
+        info = queue_callback_log.first
+        expect(info[:request_id]).to match(/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/)
+      end
+
       it "does NOT invoke callback when not blocking" do
         # remaining > 0, so no blocking
         tracker.update(limit: 100, remaining: 50, reset_at: Time.now + 60)
@@ -733,6 +843,40 @@ RSpec.describe SecApi::Middleware::RateLimiter do
         end
 
         expect { connection_no_callback.get("/test") }.not_to raise_error
+      end
+
+      it "logs queue event as JSON when logger is configured" do
+        log_output = StringIO.new
+        logger = Logger.new(log_output)
+        logger.formatter = ->(_, _, _, msg) { "#{msg}\n" }
+
+        connection_with_logging = Faraday.new do |conn|
+          conn.use described_class,
+            state_store: tracker,
+            logger: logger,
+            log_level: :info
+          conn.adapter :test, stubs
+        end
+
+        tracker.update(limit: 100, remaining: 0, reset_at: Time.now + 0.1)
+        stubs.get("/test") do
+          [200, {
+            "X-RateLimit-Limit" => "100",
+            "X-RateLimit-Remaining" => "99",
+            "X-RateLimit-Reset" => (Time.now + 60).to_i.to_s
+          }, "{}"]
+        end
+
+        connection_with_logging.get("/test")
+
+        log_output.rewind
+        log_line = log_output.read.strip
+        log_data = JSON.parse(log_line)
+
+        expect(log_data["event"]).to eq("secapi.rate_limit.queue")
+        expect(log_data["request_id"]).to match(/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/)
+        expect(log_data["queue_size"]).to be_a(Integer)
+        expect(log_data["wait_time"]).to be_a(Numeric)
       end
     end
 
@@ -854,6 +998,25 @@ RSpec.describe SecApi::Middleware::RateLimiter do
           expect(info[:reset_at]).to eq(reset_time)
         end
 
+        it "includes request_id in on_excessive_wait callback info" do
+          reset_time = Time.now + 0.1
+          tracker.update(limit: 100, remaining: 0, reset_at: reset_time)
+
+          stubs.get("/test") do
+            [200, {
+              "X-RateLimit-Limit" => "100",
+              "X-RateLimit-Remaining" => "99",
+              "X-RateLimit-Reset" => (Time.now + 60).to_i.to_s
+            }, "{}"]
+          end
+
+          connection_with_warning.get("/test")
+
+          expect(excessive_wait_log.size).to eq(1)
+          info = excessive_wait_log.first
+          expect(info[:request_id]).to match(/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/)
+        end
+
         it "does NOT invoke callback when wait is below threshold" do
           # Wait time < 0.05s threshold
           reset_time = Time.now + 0.02
@@ -954,6 +1117,25 @@ RSpec.describe SecApi::Middleware::RateLimiter do
         info = dequeue_callback_log.first
         expect(info[:queue_size]).to eq(0)  # After decrement
         expect(info[:waited]).to be >= 0
+      end
+
+      it "includes request_id in on_dequeue callback info" do
+        reset_time = Time.now + 0.1
+        tracker.update(limit: 100, remaining: 0, reset_at: reset_time)
+
+        stubs.get("/test") do
+          [200, {
+            "X-RateLimit-Limit" => "100",
+            "X-RateLimit-Remaining" => "99",
+            "X-RateLimit-Reset" => (Time.now + 60).to_i.to_s
+          }, "{}"]
+        end
+
+        connection_with_dequeue.get("/test")
+
+        expect(dequeue_callback_log.size).to eq(1)
+        info = dequeue_callback_log.first
+        expect(info[:request_id]).to match(/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/)
       end
 
       it "reports accurate wait time" do

@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "faraday"
+require "securerandom"
+require "json"
 
 module SecApi
   module Middleware
@@ -59,19 +61,22 @@ module SecApi
       # @option options [Float] :threshold (0.1) Throttle when percentage remaining drops below
       #   this value (0.0-1.0). Default is 0.1 (10%).
       # @option options [Proc, nil] :on_throttle Callback invoked when throttling occurs.
-      #   Receives a hash with :remaining, :limit, :delay, and :reset_at keys.
+      #   Receives a hash with :remaining, :limit, :delay, :reset_at, and :request_id keys.
       # @option options [Proc, nil] :on_queue Callback invoked when a request is queued
       #   due to exhausted rate limit (remaining = 0). Receives a hash with :queue_size,
-      #   :wait_time, and :reset_at keys.
+      #   :wait_time, :reset_at, and :request_id keys.
       # @option options [Integer] :queue_wait_warning_threshold (300) Seconds threshold
       #   for warning about excessive wait times. Default is 300 (5 minutes).
       # @option options [Proc, nil] :on_excessive_wait Callback invoked when wait time
       #   exceeds queue_wait_warning_threshold. Receives a hash with :wait_time,
-      #   :threshold, and :reset_at keys.
+      #   :threshold, :reset_at, and :request_id keys.
       # @option options [Proc, nil] :on_dequeue Callback invoked when a request exits
-      #   the queue (after waiting). Receives a hash with :queue_size and :waited keys.
+      #   the queue (after waiting). Receives a hash with :queue_size, :waited, and :request_id keys.
+      # @option options [Logger, nil] :logger Logger instance for structured rate limit logging.
+      #   Set to nil (default) to disable logging.
+      # @option options [Symbol] :log_level (:info) Log level for rate limit events.
       #
-      # @example With custom threshold and callbacks
+      # @example With custom threshold, callbacks, and logging
       #   tracker = SecApi::RateLimitTracker.new
       #   middleware = SecApi::Middleware::RateLimiter.new(app,
       #     state_store: tracker,
@@ -79,7 +84,9 @@ module SecApi
       #     on_throttle: ->(info) { puts "Throttling for #{info[:delay]}s" },
       #     on_queue: ->(info) { puts "Request queued, #{info[:queue_size]} waiting" },
       #     on_dequeue: ->(info) { puts "Request dequeued after #{info[:waited]}s" },
-      #     on_excessive_wait: ->(info) { puts "Warning: wait time #{info[:wait_time]}s" }
+      #     on_excessive_wait: ->(info) { puts "Warning: wait time #{info[:wait_time]}s" },
+      #     logger: Rails.logger,
+      #     log_level: :info
       #   )
       #
       def initialize(app, options = {})
@@ -94,6 +101,8 @@ module SecApi
           :queue_wait_warning_threshold,
           DEFAULT_QUEUE_WAIT_WARNING_THRESHOLD
         )
+        @logger = options[:logger]
+        @log_level = options.fetch(:log_level, :info)
         @mutex = Mutex.new
         @condition = ConditionVariable.new
       end
@@ -110,8 +119,9 @@ module SecApi
       # Processes the request with rate limit queueing, throttling, and header extraction.
       #
       # Before sending the request:
-      # 1. If rate limit is exhausted (remaining = 0), queues the request until reset
-      # 2. Otherwise, checks if below threshold and throttles if needed
+      # 1. Generates a unique request_id (UUID) for tracing across callbacks
+      # 2. If rate limit is exhausted (remaining = 0), queues the request until reset
+      # 3. Otherwise, checks if below threshold and throttles if needed
       #
       # After the response, extracts rate limit headers to update state.
       #
@@ -119,8 +129,11 @@ module SecApi
       # @return [Faraday::Response] The response
       #
       def call(env)
-        wait_if_exhausted
-        throttle_if_needed
+        # Generate unique request_id for tracing across all callbacks
+        request_id = env[:request_id] ||= SecureRandom.uuid
+
+        wait_if_exhausted(request_id)
+        throttle_if_needed(request_id)
 
         @app.call(env).on_complete do |response_env|
           extract_rate_limit_headers(response_env)
@@ -140,9 +153,10 @@ module SecApi
       # Sequential release: After reset, threads are signaled one at a time.
       # Exception safety: Uses ensure block to guarantee queued_count is decremented.
       #
+      # @param request_id [String] Unique identifier for tracing this request
       # @return [void]
       #
-      def wait_if_exhausted
+      def wait_if_exhausted(request_id)
         return unless @state_store
 
         @mutex.synchronize do
@@ -157,8 +171,8 @@ module SecApi
           queued_at = Time.now
           @state_store.increment_queued
           begin
-            invoke_queue_callback(state, wait_time)
-            warn_if_excessive_wait(wait_time, state.reset_at)
+            invoke_queue_callback(state, wait_time, request_id)
+            warn_if_excessive_wait(wait_time, state.reset_at, request_id)
 
             # Wait using ConditionVariable with timeout
             # Re-check state after wakeup - another thread may have taken the slot
@@ -169,7 +183,7 @@ module SecApi
             end
           ensure
             @state_store.decrement_queued
-            invoke_dequeue_callback(Time.now - queued_at)
+            invoke_dequeue_callback(Time.now - queued_at, request_id)
           end
         end
       end
@@ -211,19 +225,42 @@ module SecApi
         state.remaining&.zero?
       end
 
-      # Invokes the on_queue callback if configured.
+      # Invokes the on_queue callback if configured and logs the event.
       #
       # @param state [RateLimitState] The current rate limit state
       # @param wait_time [Float] Seconds the request will wait
+      # @param request_id [String] Unique identifier for tracing this request
       # @return [void]
       #
-      def invoke_queue_callback(state, wait_time)
+      def invoke_queue_callback(state, wait_time, request_id)
+        log_queue(state, wait_time, request_id)
+
         return unless @on_queue
 
         @on_queue.call(
           queue_size: queued_count,
           wait_time: wait_time,
-          reset_at: state.reset_at
+          reset_at: state.reset_at,
+          request_id: request_id
+        )
+      end
+
+      # Logs a queue event with structured data.
+      #
+      # @param state [RateLimitState] The current rate limit state
+      # @param wait_time [Float] Seconds the request will wait
+      # @param request_id [String] Unique identifier for tracing this request
+      # @return [void]
+      #
+      def log_queue(state, wait_time, request_id)
+        return unless @logger
+
+        log_event(
+          event: "secapi.rate_limit.queue",
+          request_id: request_id,
+          queue_size: queued_count,
+          wait_time: wait_time.round(2),
+          reset_at: state.reset_at&.iso8601
         )
       end
 
@@ -232,14 +269,16 @@ module SecApi
       # Called when a request exits the queue after waiting.
       #
       # @param waited [Float] Actual seconds the request waited
+      # @param request_id [String] Unique identifier for tracing this request
       # @return [void]
       #
-      def invoke_dequeue_callback(waited)
+      def invoke_dequeue_callback(waited, request_id)
         return unless @on_dequeue
 
         @on_dequeue.call(
           queue_size: queued_count,
-          waited: waited
+          waited: waited,
+          request_id: request_id
         )
       end
 
@@ -269,16 +308,18 @@ module SecApi
       #
       # @param wait_time [Float] Seconds the request will wait
       # @param reset_at [Time] When the rate limit resets
+      # @param request_id [String] Unique identifier for tracing this request
       # @return [void]
       #
-      def warn_if_excessive_wait(wait_time, reset_at)
+      def warn_if_excessive_wait(wait_time, reset_at, request_id)
         return unless wait_time > @queue_wait_warning_threshold
         return unless @on_excessive_wait
 
         @on_excessive_wait.call(
           wait_time: wait_time,
           threshold: @queue_wait_warning_threshold,
-          reset_at: reset_at
+          reset_at: reset_at,
+          request_id: request_id
         )
       end
 
@@ -305,9 +346,10 @@ module SecApi
       # - Percentage remaining is below threshold
       # - Delay is positive (reset is in the future)
       #
+      # @param request_id [String] Unique identifier for tracing this request
       # @return [void]
       #
-      def throttle_if_needed
+      def throttle_if_needed(request_id)
         return unless @state_store
 
         state = @state_store.current_state
@@ -319,24 +361,48 @@ module SecApi
         delay = calculate_delay(state)
         return unless delay.positive?
 
-        invoke_throttle_callback(state, delay)
+        invoke_throttle_callback(state, delay, request_id)
         sleep(delay)
       end
 
-      # Invokes the on_throttle callback if configured.
+      # Invokes the on_throttle callback if configured and logs the event.
       #
       # @param state [RateLimitState] The current rate limit state
       # @param delay [Float] Seconds the request will be delayed
+      # @param request_id [String] Unique identifier for tracing this request
       # @return [void]
       #
-      def invoke_throttle_callback(state, delay)
+      def invoke_throttle_callback(state, delay, request_id)
+        log_throttle(state, delay, request_id)
+
         return unless @on_throttle
 
         @on_throttle.call(
           remaining: state.remaining,
           limit: state.limit,
           delay: delay,
-          reset_at: state.reset_at
+          reset_at: state.reset_at,
+          request_id: request_id
+        )
+      end
+
+      # Logs a throttle event with structured data.
+      #
+      # @param state [RateLimitState] The current rate limit state
+      # @param delay [Float] Seconds the request will be delayed
+      # @param request_id [String] Unique identifier for tracing this request
+      # @return [void]
+      #
+      def log_throttle(state, delay, request_id)
+        return unless @logger
+
+        log_event(
+          event: "secapi.rate_limit.throttle",
+          request_id: request_id,
+          remaining: state.remaining,
+          limit: state.limit,
+          delay: delay.round(2),
+          reset_at: state.reset_at&.iso8601
         )
       end
 
@@ -425,6 +491,25 @@ module SecApi
         Time.at(Integer(value))
       rescue ArgumentError, TypeError
         nil
+      end
+
+      # Logs a structured event using the configured logger and log level.
+      #
+      # Outputs events as JSON for compatibility with monitoring tools
+      # like ELK, Splunk, and Datadog.
+      #
+      # @param data [Hash] Event data to log
+      # @return [void]
+      #
+      def log_event(data)
+        return unless @logger
+
+        begin
+          @logger.send(@log_level) { data.to_json }
+        rescue
+          # Don't let logging errors break the request
+          # Silently ignore - logging is best-effort
+        end
       end
     end
   end

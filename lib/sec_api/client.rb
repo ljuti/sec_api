@@ -111,6 +111,44 @@ module SecApi
       @_rate_limit_tracker.queued_count
     end
 
+    # Returns a summary of the current rate limit state for debugging and monitoring.
+    #
+    # Provides a comprehensive view of the rate limit status in a single method call,
+    # useful for debugging, logging, and monitoring dashboards.
+    #
+    # @return [Hash] Rate limit summary with the following keys:
+    #   - :remaining [Integer, nil] - Requests remaining in current window
+    #   - :limit [Integer, nil] - Total requests allowed per window
+    #   - :percentage [Float, nil] - Percentage of quota remaining (0.0-100.0)
+    #   - :reset_at [Time, nil] - When the rate limit window resets
+    #   - :queued_count [Integer] - Number of requests currently queued
+    #   - :exhausted [Boolean] - True if rate limit is exhausted (remaining = 0)
+    #
+    # @example Quick debugging
+    #   client = SecApi::Client.new
+    #   client.query.ticker("AAPL").search
+    #
+    #   pp client.rate_limit_summary
+    #   # => {:remaining=>95, :limit=>100, :percentage=>95.0,
+    #   #     :reset_at=>2024-01-15 10:30:00 +0000, :queued_count=>0, :exhausted=>false}
+    #
+    # @example Health check endpoint
+    #   get '/health/rate_limit' do
+    #     json client.rate_limit_summary
+    #   end
+    #
+    def rate_limit_summary
+      state = rate_limit_state
+      {
+        remaining: state&.remaining,
+        limit: state&.limit,
+        percentage: state&.percentage_remaining,
+        reset_at: state&.reset_at,
+        queued_count: queued_requests,
+        exhausted: state&.exhausted? || false
+      }
+    end
+
     private
 
     def build_connection
@@ -139,7 +177,9 @@ module SecApi
           on_throttle: @_config.on_throttle,
           on_queue: @_config.on_queue,
           on_dequeue: @_config.on_dequeue,
-          on_excessive_wait: @_config.on_excessive_wait
+          on_excessive_wait: @_config.on_excessive_wait,
+          logger: @_config.logger,
+          log_level: @_config.log_level
 
         # Error handler middleware - converts HTTP errors to typed exceptions
         # Positioned AFTER retry so non-retryable errors (401, 404, etc.) fail immediately
@@ -186,7 +226,7 @@ module SecApi
         retry_block: ->(env:, options:, retry_count:, exception:, will_retry_in:) {
           # Called before EACH retry attempt
           # Invoke on_rate_limit callback for 429 responses
-          invoke_on_rate_limit_callback(exception, retry_count)
+          invoke_on_rate_limit_callback(exception, retry_count, env)
 
           # Basic logging - users can configure @_config.on_retry callback for custom instrumentation
           if @_config.respond_to?(:on_retry) && @_config.on_retry
@@ -216,21 +256,51 @@ module SecApi
       end
     end
 
-    # Invokes the on_rate_limit callback for RateLimitError exceptions.
+    # Invokes the on_rate_limit callback for RateLimitError exceptions and logs the event.
     #
     # @param exception [Exception] The exception that triggered the retry
     # @param retry_count [Integer] Zero-indexed retry count from faraday-retry
+    # @param env [Hash] Faraday request environment containing request_id
     # @return [void]
     # @api private
-    def invoke_on_rate_limit_callback(exception, retry_count)
+    def invoke_on_rate_limit_callback(exception, retry_count, env = {})
       return unless exception.is_a?(SecApi::RateLimitError)
+
+      log_rate_limit_exceeded(exception, retry_count, env)
+
       return unless @_config.respond_to?(:on_rate_limit) && @_config.on_rate_limit
 
       @_config.on_rate_limit.call({
         retry_after: exception.retry_after,
         reset_at: exception.reset_at,
-        attempt: retry_count + 1 # Convert 0-indexed to 1-indexed for user convenience
+        attempt: retry_count + 1, # Convert 0-indexed to 1-indexed for user convenience
+        request_id: env[:request_id]
       })
+    end
+
+    # Logs a 429 rate limit exceeded event with structured data.
+    #
+    # @param exception [RateLimitError] The rate limit exception
+    # @param retry_count [Integer] Zero-indexed retry count
+    # @param env [Hash] Faraday request environment
+    # @return [void]
+    # @api private
+    def log_rate_limit_exceeded(exception, retry_count, env)
+      return unless @_config.logger
+
+      log_data = {
+        event: "secapi.rate_limit.exceeded",
+        request_id: env[:request_id],
+        retry_after: exception.retry_after,
+        reset_at: exception.reset_at&.iso8601,
+        attempt: retry_count + 1
+      }
+
+      begin
+        @_config.logger.send(@_config.log_level) { log_data.to_json }
+      rescue
+        # Don't let logging errors break the request
+      end
     end
   end
 end

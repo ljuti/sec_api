@@ -571,6 +571,63 @@ RSpec.describe SecApi::Client do
     end
   end
 
+  describe "#rate_limit_summary" do
+    let(:config) { SecApi::Config.new(api_key: "test_api_key_valid") }
+    let(:client) { SecApi::Client.new(config) }
+
+    it "returns hash with all expected keys" do
+      summary = client.rate_limit_summary
+
+      expect(summary.keys).to contain_exactly(
+        :remaining, :limit, :percentage, :reset_at, :queued_count, :exhausted
+      )
+    end
+
+    it "returns nil values before any requests are made" do
+      summary = client.rate_limit_summary
+
+      expect(summary[:remaining]).to be_nil
+      expect(summary[:limit]).to be_nil
+      expect(summary[:percentage]).to be_nil
+      expect(summary[:reset_at]).to be_nil
+      expect(summary[:queued_count]).to eq(0)
+      expect(summary[:exhausted]).to eq(false)
+    end
+
+    it "returns rate limit state after requests" do
+      tracker = client.instance_variable_get(:@_rate_limit_tracker)
+      tracker.update(limit: 100, remaining: 95, reset_at: Time.now + 60)
+
+      summary = client.rate_limit_summary
+
+      expect(summary[:remaining]).to eq(95)
+      expect(summary[:limit]).to eq(100)
+      expect(summary[:percentage]).to eq(95.0)
+      expect(summary[:reset_at]).to be_a(Time)
+      expect(summary[:exhausted]).to eq(false)
+    end
+
+    it "correctly identifies exhausted state" do
+      tracker = client.instance_variable_get(:@_rate_limit_tracker)
+      tracker.update(limit: 100, remaining: 0, reset_at: Time.now + 60)
+
+      summary = client.rate_limit_summary
+
+      expect(summary[:remaining]).to eq(0)
+      expect(summary[:exhausted]).to eq(true)
+    end
+
+    it "includes current queue count" do
+      tracker = client.instance_variable_get(:@_rate_limit_tracker)
+      tracker.increment_queued
+      tracker.increment_queued
+
+      summary = client.rate_limit_summary
+
+      expect(summary[:queued_count]).to eq(2)
+    end
+  end
+
   describe "connection pooling and thread safety" do
     it "supports 10+ concurrent requests without blocking (NFR14)" do
       config = SecApi::Config.new(api_key: "test_api_key_valid")
@@ -690,6 +747,72 @@ RSpec.describe SecApi::Client do
 
         expect(callback_invoked.first[:retry_after]).to be_nil
         expect(callback_invoked.first[:reset_at]).to be_nil
+      end
+
+      it "includes request_id in on_rate_limit callback info" do
+        callback_invoked = []
+        callback = ->(info) { callback_invoked << info }
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          retry_max_attempts: 2,
+          on_rate_limit: callback
+        )
+        client = SecApi::Client.new(config)
+        tracker = SecApi::RateLimitTracker.new
+
+        stubs.get("/test") { [429, {"Retry-After" => "1"}, "Rate limited"] }
+        stubs.get("/test") { [200, {}, '{"result": "success"}'] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::RateLimiter, state_store: tracker
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        expect(callback_invoked.size).to eq(1)
+        expect(callback_invoked.first[:request_id]).to match(/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/)
+      end
+
+      it "logs rate limit exceeded event as JSON when logger is configured" do
+        log_output = StringIO.new
+        logger = Logger.new(log_output)
+        logger.formatter = ->(_, _, _, msg) { "#{msg}\n" }
+
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          retry_max_attempts: 2,
+          logger: logger,
+          log_level: :info
+        )
+        client = SecApi::Client.new(config)
+        tracker = SecApi::RateLimitTracker.new
+
+        stubs.get("/test") { [429, {"Retry-After" => "1"}, "Rate limited"] }
+        stubs.get("/test") { [200, {}, '{"result": "success"}'] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::RateLimiter, state_store: tracker
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        log_output.rewind
+        log_line = log_output.read.strip
+        log_data = JSON.parse(log_line)
+
+        expect(log_data["event"]).to eq("secapi.rate_limit.exceeded")
+        expect(log_data["retry_after"]).to eq(1)
+        expect(log_data["attempt"]).to eq(1)
       end
     end
 

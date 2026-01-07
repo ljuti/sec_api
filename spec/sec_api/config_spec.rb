@@ -330,4 +330,27 @@ RSpec.describe SecApi::Config do
       expect(config.on_throttle).to be_nil
     end
   end
+
+  describe "logger configuration" do
+    it "accepts a Logger instance" do
+      logger = Logger.new($stdout)
+      config = SecApi::Config.new(api_key: "valid_test_key_123", logger: logger)
+      expect(config.logger).to be_a(Logger)
+    end
+
+    it "defaults to nil when not provided" do
+      config = SecApi::Config.new(api_key: "valid_test_key_123")
+      expect(config.logger).to be_nil
+    end
+
+    it "accepts log_level as a symbol" do
+      config = SecApi::Config.new(api_key: "valid_test_key_123", log_level: :debug)
+      expect(config.log_level).to eq(:debug)
+    end
+
+    it "defaults log_level to :info when not provided" do
+      config = SecApi::Config.new(api_key: "valid_test_key_123")
+      expect(config.log_level).to eq(:info)
+    end
+  end
 end

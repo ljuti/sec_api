@@ -31,6 +31,42 @@ module SecApi
   #     - :limit [Integer] - Total requests allowed per window
   #     - :delay [Float] - Seconds the request will be delayed
   #     - :reset_at [Time] - When the rate limit window resets
+  #     - :request_id [String] - UUID for tracing this request across callbacks
+  #
+  #   @example New Relic integration
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       on_throttle: ->(info) {
+  #         NewRelic::Agent.record_custom_event(
+  #           "SecApiRateLimitThrottle",
+  #           remaining: info[:remaining],
+  #           delay: info[:delay],
+  #           request_id: info[:request_id]
+  #         )
+  #       }
+  #     )
+  #
+  #   @example Datadog StatsD integration
+  #     require 'datadog/statsd'
+  #     statsd = Datadog::Statsd.new('localhost', 8125)
+  #
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       on_throttle: ->(info) {
+  #         statsd.increment('sec_api.rate_limit.throttle')
+  #         statsd.gauge('sec_api.rate_limit.remaining', info[:remaining])
+  #         statsd.histogram('sec_api.rate_limit.delay', info[:delay])
+  #       }
+  #     )
+  #
+  #   @example StatsD integration
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       on_throttle: ->(info) {
+  #         StatsD.increment("sec_api.throttle")
+  #         StatsD.gauge("sec_api.remaining", info[:remaining])
+  #       }
+  #     )
   #
   # @!attribute [rw] on_rate_limit
   #   @return [Proc, nil] Optional callback invoked when a 429 rate limit response
@@ -40,6 +76,25 @@ module SecApi
   #     - :retry_after [Integer, nil] - Seconds to wait (from Retry-After header)
   #     - :reset_at [Time, nil] - When the rate limit resets (from X-RateLimit-Reset)
   #     - :attempt [Integer] - Current retry attempt number
+  #     - :request_id [String, nil] - UUID for tracing this request across callbacks
+  #
+  #   @example New Relic integration for 429 responses
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       on_rate_limit: ->(info) {
+  #         NewRelic::Agent.record_custom_event(
+  #           "SecApiRateLimit429",
+  #           retry_after: info[:retry_after],
+  #           attempt: info[:attempt],
+  #           request_id: info[:request_id]
+  #         )
+  #       }
+  #     )
+  #
+  #   @example Alert threshold recommendation
+  #     # Consider alerting when on_rate_limit is invoked frequently:
+  #     # - Warning: >5 rate limit hits per minute
+  #     # - Critical: >20 rate limit hits per minute
   #
   # @!attribute [rw] queue_wait_warning_threshold
   #   @return [Integer] Threshold in seconds for excessive wait warnings.
@@ -52,6 +107,18 @@ module SecApi
   #     - :queue_size [Integer] - Number of requests currently queued
   #     - :wait_time [Float] - Estimated seconds until rate limit resets
   #     - :reset_at [Time] - When the rate limit window resets
+  #     - :request_id [String] - UUID for tracing this request across callbacks
+  #
+  #   @example Datadog queue depth monitoring
+  #     statsd = Datadog::Statsd.new('localhost', 8125)
+  #
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       on_queue: ->(info) {
+  #         statsd.gauge('sec_api.rate_limit.queue_size', info[:queue_size])
+  #         statsd.histogram('sec_api.rate_limit.wait_time', info[:wait_time])
+  #       }
+  #     )
   #
   # @!attribute [rw] on_excessive_wait
   #   @return [Proc, nil] Optional callback invoked when queue wait time exceeds
@@ -60,12 +127,37 @@ module SecApi
   #     - :wait_time [Float] - Seconds the request will wait
   #     - :threshold [Integer] - The configured warning threshold
   #     - :reset_at [Time] - When the rate limit resets
+  #     - :request_id [String] - UUID for tracing this request across callbacks
   #
   # @!attribute [rw] on_dequeue
   #   @return [Proc, nil] Optional callback invoked when a request exits the queue
   #     after waiting for rate limit reset. Receives a hash with:
   #     - :queue_size [Integer] - Number of requests remaining in queue
   #     - :waited [Float] - Actual seconds the request waited
+  #     - :request_id [String] - UUID for tracing this request across callbacks
+  #
+  # @!attribute [rw] logger
+  #   @return [Logger, nil] Optional logger instance for structured rate limit logging.
+  #     When configured, the middleware will log rate limit events (throttle, queue, 429)
+  #     as JSON for compatibility with monitoring tools like ELK, Splunk, and Datadog.
+  #     Compatible with Ruby Logger and ActiveSupport::Logger interfaces.
+  #     Set to nil (default) to disable logging.
+  #
+  #   @example Using Rails logger
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       logger: Rails.logger,
+  #       log_level: :info
+  #     )
+  #
+  #   @example Log output format (JSON)
+  #     # {"event":"secapi.rate_limit.throttle","request_id":"abc-123","remaining":5,"delay":30.2}
+  #     # {"event":"secapi.rate_limit.queue","request_id":"abc-123","queue_size":3,"wait_time":60}
+  #     # {"event":"secapi.rate_limit.exceeded","request_id":"abc-123","retry_after":30,"attempt":1}
+  #
+  # @!attribute [rw] log_level
+  #   @return [Symbol] Log level for rate limit events. Default is :info.
+  #     Valid values: :debug, :info, :warn, :error
   #
   class Config < Anyway::Config
     config_name :secapi
@@ -84,7 +176,9 @@ module SecApi
       :on_rate_limit,
       :on_queue,
       :on_dequeue,
-      :on_excessive_wait
+      :on_excessive_wait,
+      :logger,
+      :log_level
 
     # Sensible defaults
     def initialize(*)
@@ -97,6 +191,7 @@ module SecApi
       self.request_timeout ||= 30
       self.rate_limit_threshold ||= 0.1
       self.queue_wait_warning_threshold ||= 300  # 5 minutes
+      self.log_level ||= :info
     end
 
     # Validation called by Client
