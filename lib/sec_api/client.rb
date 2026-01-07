@@ -6,6 +6,7 @@ module SecApi
     def initialize(config = Config.new)
       @_config = config
       @_config.validate!
+      @_rate_limit_tracker = RateLimitTracker.new
     end
 
     def config
@@ -52,6 +53,39 @@ module SecApi
       @_xbrl ||= Xbrl.new(self)
     end
 
+    # Returns the current rate limit state from the most recent API response.
+    #
+    # The state is automatically updated after each API request based on
+    # X-RateLimit-* headers returned by sec-api.io.
+    #
+    # @return [RateLimitState, nil] The current rate limit state, or nil if no
+    #   rate limit headers have been received yet
+    #
+    # @example Check rate limit status after requests
+    #   client = SecApi::Client.new
+    #   client.query.ticker("AAPL").search
+    #
+    #   state = client.rate_limit_state
+    #   puts "Remaining: #{state.remaining}/#{state.limit}"
+    #   puts "Resets at: #{state.reset_at}"
+    #
+    # @example Proactive throttling based on remaining quota
+    #   state = client.rate_limit_state
+    #   if state&.percentage_remaining && state.percentage_remaining < 10
+    #     # Less than 10% remaining, consider slowing down
+    #     sleep(1)
+    #   end
+    #
+    # @example Handle exhausted rate limit
+    #   if client.rate_limit_state&.exhausted?
+    #     wait_time = client.rate_limit_state.reset_at - Time.now
+    #     sleep(wait_time) if wait_time.positive?
+    #   end
+    #
+    def rate_limit_state
+      @_rate_limit_tracker.current_state
+    end
+
     private
 
     def build_connection
@@ -67,6 +101,11 @@ module SecApi
         # Retry middleware - positioned BEFORE ErrorHandler to catch HTTP status codes
         # Retries on [429, 500, 502, 503, 504] and Faraday exceptions
         conn.request :retry, retry_options
+
+        # Rate limiter middleware - extracts X-RateLimit-* headers from responses
+        # Positioned after Retry to capture final response headers (not intermediate retries)
+        # Positioned before ErrorHandler to capture headers even from 429 responses
+        conn.use Middleware::RateLimiter, state_store: @_rate_limit_tracker
 
         # Error handler middleware - converts HTTP errors to typed exceptions
         # Positioned AFTER retry so non-retryable errors (401, 404, etc.) fail immediately

@@ -203,6 +203,23 @@ RSpec.describe SecApi::Client do
       # This allows retry to catch status codes before ErrorHandler raises
       expect(retry_index).to be < error_handler_index
     end
+
+    it "includes RateLimiter middleware in the connection stack" do
+      middleware_classes = client.connection.builder.handlers.map(&:klass)
+      expect(middleware_classes).to include(SecApi::Middleware::RateLimiter)
+    end
+
+    it "positions RateLimiter after Retry and before ErrorHandler" do
+      handlers = client.connection.builder.handlers
+      retry_index = handlers.index { |h| h.klass == Faraday::Retry::Middleware }
+      rate_limiter_index = handlers.index { |h| h.klass == SecApi::Middleware::RateLimiter }
+      error_handler_index = handlers.index { |h| h.klass == SecApi::Middleware::ErrorHandler }
+
+      # RateLimiter should be after Retry (to capture final response headers)
+      expect(rate_limiter_index).to be > retry_index
+      # RateLimiter should be before ErrorHandler (to capture headers from 429 responses)
+      expect(rate_limiter_index).to be < error_handler_index
+    end
   end
 
   describe "retry middleware behavior" do
@@ -349,6 +366,102 @@ RSpec.describe SecApi::Client do
       client = SecApi::Client.new(config)
 
       expect(client.config.retry_backoff_factor).to eq(3)
+    end
+  end
+
+  describe "#rate_limit_state" do
+    let(:config) { SecApi::Config.new(api_key: "test_api_key_valid") }
+    let(:client) { SecApi::Client.new(config) }
+
+    it "returns nil before any requests are made" do
+      expect(client.rate_limit_state).to be_nil
+    end
+
+    it "returns RateLimitState after a request with rate limit headers" do
+      stubs = Faraday::Adapter::Test::Stubs.new
+      reset_time = Time.now.to_i + 60
+
+      stubs.get("/test") do
+        [200, {
+          "X-RateLimit-Limit" => "100",
+          "X-RateLimit-Remaining" => "95",
+          "X-RateLimit-Reset" => reset_time.to_s
+        }, "{}"]
+      end
+
+      # Use real connection that goes through our middleware
+      allow(client).to receive(:connection).and_return(
+        Faraday.new do |conn|
+          conn.use SecApi::Middleware::RateLimiter,
+            state_store: client.instance_variable_get(:@_rate_limit_tracker)
+          conn.adapter :test, stubs
+        end
+      )
+
+      client.connection.get("/test")
+
+      state = client.rate_limit_state
+      expect(state).to be_a(SecApi::RateLimitState)
+      expect(state.limit).to eq(100)
+      expect(state.remaining).to eq(95)
+      expect(state.reset_at).to eq(Time.at(reset_time))
+
+      stubs.verify_stubbed_calls
+    end
+
+    it "updates state on each request" do
+      stubs = Faraday::Adapter::Test::Stubs.new
+
+      stubs.get("/first") do
+        [200, {"X-RateLimit-Remaining" => "99"}, "{}"]
+      end
+      stubs.get("/second") do
+        [200, {"X-RateLimit-Remaining" => "98"}, "{}"]
+      end
+
+      allow(client).to receive(:connection).and_return(
+        Faraday.new do |conn|
+          conn.use SecApi::Middleware::RateLimiter,
+            state_store: client.instance_variable_get(:@_rate_limit_tracker)
+          conn.adapter :test, stubs
+        end
+      )
+
+      client.connection.get("/first")
+      expect(client.rate_limit_state.remaining).to eq(99)
+
+      client.connection.get("/second")
+      expect(client.rate_limit_state.remaining).to eq(98)
+
+      stubs.verify_stubbed_calls
+    end
+  end
+
+  describe "rate limit state independence" do
+    it "each client maintains its own rate limit state" do
+      config = SecApi::Config.new(api_key: "test_api_key_valid")
+      client1 = SecApi::Client.new(config)
+      client2 = SecApi::Client.new(config)
+
+      # Update client1's state through its tracker
+      client1.instance_variable_get(:@_rate_limit_tracker).update(
+        limit: 100,
+        remaining: 50,
+        reset_at: Time.now
+      )
+
+      # Update client2's state with different values
+      client2.instance_variable_get(:@_rate_limit_tracker).update(
+        limit: 200,
+        remaining: 150,
+        reset_at: Time.now
+      )
+
+      # Each client has independent state
+      expect(client1.rate_limit_state.limit).to eq(100)
+      expect(client2.rate_limit_state.limit).to eq(200)
+      expect(client1.rate_limit_state.remaining).to eq(50)
+      expect(client2.rate_limit_state.remaining).to eq(150)
     end
   end
 
