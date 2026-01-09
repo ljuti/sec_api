@@ -166,4 +166,65 @@ RSpec.describe SecApi::Objects::StreamFiling do
       expect(filing.ticker).to eq("")
     end
   end
+
+  describe "convenience methods (Story 6.3)" do
+    describe "#url" do
+      it "returns link_to_html when available" do
+        filing = described_class.new(valid_attributes)
+        expect(filing.url).to eq(valid_attributes[:link_to_html])
+      end
+
+      it "returns link_to_txt when link_to_html is nil" do
+        attrs = valid_attributes.merge(link_to_html: nil)
+        filing = described_class.new(attrs)
+        expect(filing.url).to eq(valid_attributes[:link_to_txt])
+      end
+
+      it "returns link_to_txt when link_to_html is empty string" do
+        attrs = valid_attributes.merge(link_to_html: "")
+        filing = described_class.new(attrs)
+        expect(filing.url).to eq(valid_attributes[:link_to_txt])
+      end
+
+      it "returns nil when both links are nil" do
+        attrs = valid_attributes.merge(link_to_html: nil, link_to_txt: nil)
+        filing = described_class.new(attrs)
+        expect(filing.url).to be_nil
+      end
+
+      it "returns nil when both links are empty strings" do
+        attrs = valid_attributes.merge(link_to_html: "", link_to_txt: "")
+        filing = described_class.new(attrs)
+        expect(filing.url).to be_nil
+      end
+    end
+
+    describe "#filing_url" do
+      it "is an alias for #url" do
+        filing = described_class.new(valid_attributes)
+        expect(filing.filing_url).to eq(filing.url)
+      end
+    end
+
+    describe "#accession_number" do
+      it "is an alias for #accession_no" do
+        filing = described_class.new(valid_attributes)
+        expect(filing.accession_number).to eq(filing.accession_no)
+      end
+    end
+
+    describe "#html_url" do
+      it "is an alias for #link_to_html" do
+        filing = described_class.new(valid_attributes)
+        expect(filing.html_url).to eq(filing.link_to_html)
+      end
+    end
+
+    describe "#txt_url" do
+      it "is an alias for #link_to_txt" do
+        filing = described_class.new(valid_attributes)
+        expect(filing.txt_url).to eq(filing.link_to_txt)
+      end
+    end
+  end
 end

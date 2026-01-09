@@ -85,6 +85,59 @@ module SecApi
         deep_freeze(data_files) if data_files
         freeze
       end
+
+      # Returns the preferred filing URL (HTML if available, otherwise TXT).
+      #
+      # This convenience method provides a single access point for the filing
+      # document URL, preferring the HTML version when available.
+      #
+      # @return [String, nil] the filing URL or nil if neither available
+      # @example
+      #   filing.url #=> "https://sec.gov/Archives/..."
+      #
+      def url
+        return link_to_html unless link_to_html.nil? || link_to_html.empty?
+        return link_to_txt unless link_to_txt.nil? || link_to_txt.empty?
+        nil
+      end
+
+      # Alias for {#url}. Returns the preferred filing URL.
+      #
+      # @return [String, nil] the filing URL or nil if neither available
+      # @see #url
+      #
+      def filing_url
+        url
+      end
+
+      # Alias for {#accession_no}. Returns the SEC accession number.
+      #
+      # Provides compatibility with Filing object API naming conventions.
+      #
+      # @return [String] SEC accession number (e.g., "0001193125-24-123456")
+      # @see #accession_no
+      #
+      def accession_number
+        accession_no
+      end
+
+      # Alias for {#link_to_html}. Returns URL to HTML version of filing.
+      #
+      # @return [String, nil] URL to HTML version of filing
+      # @see #link_to_html
+      #
+      def html_url
+        link_to_html
+      end
+
+      # Alias for {#link_to_txt}. Returns URL to plain text version of filing.
+      #
+      # @return [String, nil] URL to plain text version of filing
+      # @see #link_to_txt
+      #
+      def txt_url
+        link_to_txt
+      end
     end
   end
 end

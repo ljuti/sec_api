@@ -593,4 +593,223 @@ RSpec.describe SecApi::Stream do
       expect { stream.send(:handle_message, "invalid json") }.not_to raise_error
     end
   end
+
+  describe "sequential callback processing (Story 6.3, AC: #3)" do
+    let(:multi_filing_json) do
+      [
+        {"accessionNo" => "001", "formType" => "8-K", "filedAt" => "2024-01-15T10:00:00", "cik" => "123", "ticker" => "AAPL", "companyName" => "Apple Inc.", "linkToFilingDetails" => "https://..."},
+        {"accessionNo" => "002", "formType" => "10-K", "filedAt" => "2024-01-15T10:01:00", "cik" => "456", "ticker" => "TSLA", "companyName" => "Tesla Inc.", "linkToFilingDetails" => "https://..."},
+        {"accessionNo" => "003", "formType" => "10-Q", "filedAt" => "2024-01-15T10:02:00", "cik" => "789", "ticker" => "MSFT", "companyName" => "Microsoft Corp.", "linkToFilingDetails" => "https://..."}
+      ].to_json
+    end
+
+    before do
+      stream.instance_variable_set(:@running, true)
+    end
+
+    it "processes filings in order they were received" do
+      order = []
+      stream.instance_variable_set(:@callback, ->(f) { order << f.accession_no })
+
+      stream.send(:handle_message, multi_filing_json)
+
+      expect(order).to eq(["001", "002", "003"])
+    end
+
+    it "invokes callbacks sequentially (not in parallel)" do
+      # Track callback start and end to verify sequential execution
+      execution_log = []
+      stream.instance_variable_set(:@callback, ->(f) {
+        execution_log << "start:#{f.accession_no}"
+        # Simulate some work
+        execution_log << "end:#{f.accession_no}"
+      })
+
+      stream.send(:handle_message, multi_filing_json)
+
+      # Sequential execution: start1, end1, start2, end2, start3, end3
+      expect(execution_log).to eq([
+        "start:001", "end:001",
+        "start:002", "end:002",
+        "start:003", "end:003"
+      ])
+    end
+
+    it "maintains order even when some callbacks raise exceptions" do
+      order = []
+      stream.instance_variable_set(:@callback, ->(f) {
+        order << f.accession_no
+        raise "Error" if f.accession_no == "002"
+      })
+
+      stream.send(:handle_message, multi_filing_json)
+
+      expect(order).to eq(["001", "002", "003"])
+    end
+  end
+
+  describe "callback exception handling (Story 6.3, AC: #4)" do
+    let(:logger) { instance_double(Logger) }
+    let(:config_with_logger) do
+      instance_double(SecApi::Config,
+        api_key: "test_key",
+        logger: logger,
+        log_level: :error,
+        on_callback_error: nil)
+    end
+    let(:client_with_logger) { instance_double(SecApi::Client, config: config_with_logger) }
+    let(:stream_with_logger) { described_class.new(client_with_logger) }
+
+    let(:valid_filing_json) do
+      [{"accessionNo" => "001", "formType" => "8-K", "filedAt" => "2024-01-15", "cik" => "123", "ticker" => "AAPL", "companyName" => "Apple Inc.", "linkToFilingDetails" => "https://..."}].to_json
+    end
+
+    let(:multi_filing_json) do
+      [
+        {"accessionNo" => "001", "formType" => "8-K", "filedAt" => "2024-01-15", "cik" => "123", "ticker" => "AAPL", "companyName" => "Apple Inc.", "linkToFilingDetails" => "https://..."},
+        {"accessionNo" => "002", "formType" => "10-K", "filedAt" => "2024-01-15", "cik" => "456", "ticker" => "TSLA", "companyName" => "Tesla Inc.", "linkToFilingDetails" => "https://..."},
+        {"accessionNo" => "003", "formType" => "10-Q", "filedAt" => "2024-01-15", "cik" => "789", "ticker" => "MSFT", "companyName" => "Microsoft Corp.", "linkToFilingDetails" => "https://..."}
+      ].to_json
+    end
+
+    describe "exception recovery" do
+      before do
+        stream.instance_variable_set(:@running, true)
+      end
+
+      it "continues processing after callback exception" do
+        processed = []
+        stream.instance_variable_set(:@callback, ->(f) {
+          raise "Test error" if f.ticker == "TSLA"
+          processed << f.ticker
+        })
+
+        stream.send(:handle_message, multi_filing_json)
+
+        expect(processed).to eq(["AAPL", "MSFT"])
+      end
+
+      it "does not crash the stream when callback raises" do
+        stream.instance_variable_set(:@callback, ->(f) { raise "Boom!" })
+
+        expect { stream.send(:handle_message, valid_filing_json) }.not_to raise_error
+      end
+
+      it "processes all filings even when multiple callbacks raise" do
+        processed = []
+        stream.instance_variable_set(:@callback, ->(f) {
+          processed << f.ticker
+          raise "Error for #{f.ticker}"
+        })
+
+        stream.send(:handle_message, multi_filing_json)
+
+        expect(processed).to eq(["AAPL", "TSLA", "MSFT"])
+      end
+    end
+
+    describe "exception logging" do
+      before do
+        stream_with_logger.instance_variable_set(:@running, true)
+      end
+
+      it "logs callback exception with filing context" do
+        stream_with_logger.instance_variable_set(:@callback, ->(f) { raise "Test error" })
+
+        expect(logger).to receive(:error) do |&block|
+          log_json = JSON.parse(block.call)
+          expect(log_json["event"]).to eq("secapi.stream.callback_error")
+          expect(log_json["error_class"]).to eq("RuntimeError")
+          expect(log_json["error_message"]).to eq("Test error")
+          expect(log_json["accession_no"]).to eq("001")
+          expect(log_json["ticker"]).to eq("AAPL")
+          expect(log_json["form_type"]).to eq("8-K")
+        end
+
+        stream_with_logger.send(:handle_message, valid_filing_json)
+      end
+
+      it "does not crash when logger is nil" do
+        config_no_logger = instance_double(SecApi::Config,
+          api_key: "test_key",
+          logger: nil,
+          on_callback_error: nil)
+        client_no_logger = instance_double(SecApi::Client, config: config_no_logger)
+        stream_no_logger = described_class.new(client_no_logger)
+
+        stream_no_logger.instance_variable_set(:@running, true)
+        stream_no_logger.instance_variable_set(:@callback, ->(f) { raise "Test error" })
+
+        expect { stream_no_logger.send(:handle_message, valid_filing_json) }.not_to raise_error
+      end
+
+      it "does not crash when logger raises exception" do
+        stream_with_logger.instance_variable_set(:@callback, ->(f) { raise "Test error" })
+        allow(logger).to receive(:error).and_raise("Logger failed!")
+
+        expect { stream_with_logger.send(:handle_message, valid_filing_json) }.not_to raise_error
+      end
+    end
+
+    describe "on_callback_error callback" do
+      it "invokes on_callback_error with error context" do
+        error_infos = []
+        on_error = ->(info) { error_infos << info }
+
+        config_with_error_cb = instance_double(SecApi::Config,
+          api_key: "test_key",
+          logger: nil,
+          on_callback_error: on_error)
+        client_with_error_cb = instance_double(SecApi::Client, config: config_with_error_cb)
+        stream_with_error_cb = described_class.new(client_with_error_cb)
+
+        stream_with_error_cb.instance_variable_set(:@running, true)
+        stream_with_error_cb.instance_variable_set(:@callback, ->(f) { raise "Callback failed!" })
+
+        stream_with_error_cb.send(:handle_message, valid_filing_json)
+
+        expect(error_infos.size).to eq(1)
+        expect(error_infos.first[:error]).to be_a(RuntimeError)
+        expect(error_infos.first[:error].message).to eq("Callback failed!")
+        expect(error_infos.first[:filing]).to be_a(SecApi::Objects::StreamFiling)
+        expect(error_infos.first[:accession_no]).to eq("001")
+        expect(error_infos.first[:ticker]).to eq("AAPL")
+      end
+
+      it "continues processing when on_callback_error raises" do
+        on_error = ->(info) { raise "Error handler failed!" }
+
+        config_with_error_cb = instance_double(SecApi::Config,
+          api_key: "test_key",
+          logger: nil,
+          on_callback_error: on_error)
+        client_with_error_cb = instance_double(SecApi::Client, config: config_with_error_cb)
+        stream_with_error_cb = described_class.new(client_with_error_cb)
+
+        stream_with_error_cb.instance_variable_set(:@running, true)
+        stream_with_error_cb.instance_variable_set(:@callback, ->(f) { raise "Original error" })
+
+        expect { stream_with_error_cb.send(:handle_message, valid_filing_json) }.not_to raise_error
+      end
+
+      it "invokes on_callback_error for each failing callback" do
+        error_count = 0
+        on_error = ->(info) { error_count += 1 }
+
+        config_with_error_cb = instance_double(SecApi::Config,
+          api_key: "test_key",
+          logger: nil,
+          on_callback_error: on_error)
+        client_with_error_cb = instance_double(SecApi::Client, config: config_with_error_cb)
+        stream_with_error_cb = described_class.new(client_with_error_cb)
+
+        stream_with_error_cb.instance_variable_set(:@running, true)
+        stream_with_error_cb.instance_variable_set(:@callback, ->(f) { raise "Error!" })
+
+        stream_with_error_cb.send(:handle_message, multi_filing_json)
+
+        expect(error_count).to eq(3)
+      end
+    end
+  end
 end

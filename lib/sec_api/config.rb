@@ -159,6 +159,35 @@ module SecApi
   #   @return [Symbol] Log level for rate limit events. Default is :info.
   #     Valid values: :debug, :info, :warn, :error
   #
+  # @!attribute [rw] on_callback_error
+  #   @return [Proc, nil] Optional callback invoked when a stream callback raises
+  #     an exception. The stream continues processing after this callback returns.
+  #     Receives a hash with the following keys:
+  #     - :error [Exception] - The exception that was raised
+  #     - :filing [SecApi::Objects::StreamFiling] - The filing being processed
+  #     - :accession_no [String] - SEC accession number
+  #     - :ticker [String, nil] - Stock ticker symbol
+  #
+  #   @example Log to external error service
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       on_callback_error: ->(info) {
+  #         Bugsnag.notify(info[:error], {
+  #           filing: info[:accession_no],
+  #           ticker: info[:ticker]
+  #         })
+  #       }
+  #     )
+  #
+  #   @example Custom error handling
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       on_callback_error: ->(info) {
+  #         Rails.logger.error("Stream callback failed: #{info[:error].message}")
+  #         ErrorQueue.push(info[:error], info[:filing].to_h)
+  #       }
+  #     )
+  #
   class Config < Anyway::Config
     config_name :secapi
 
@@ -177,6 +206,7 @@ module SecApi
       :on_queue,
       :on_dequeue,
       :on_excessive_wait,
+      :on_callback_error,
       :logger,
       :log_level
 

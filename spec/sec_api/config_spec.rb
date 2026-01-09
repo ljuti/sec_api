@@ -331,6 +331,38 @@ RSpec.describe SecApi::Config do
     end
   end
 
+  describe "on_callback_error callback (Story 6.3)" do
+    it "accepts a callback proc" do
+      callback = ->(info) { puts info[:error].message }
+      config = SecApi::Config.new(api_key: "valid_test_key_123", on_callback_error: callback)
+      expect(config.on_callback_error).to eq(callback)
+    end
+
+    it "defaults to nil when not provided" do
+      config = SecApi::Config.new(api_key: "valid_test_key_123")
+      expect(config.on_callback_error).to be_nil
+    end
+
+    it "can be invoked with error context hash" do
+      received_info = nil
+      callback = ->(info) { received_info = info }
+      config = SecApi::Config.new(api_key: "valid_test_key_123", on_callback_error: callback)
+
+      # Simulate callback invocation
+      test_error = RuntimeError.new("Test error")
+      config.on_callback_error.call(
+        error: test_error,
+        filing: nil,
+        accession_no: "0001-24-001",
+        ticker: "AAPL"
+      )
+
+      expect(received_info[:error]).to eq(test_error)
+      expect(received_info[:accession_no]).to eq("0001-24-001")
+      expect(received_info[:ticker]).to eq("AAPL")
+    end
+  end
+
   describe "logger configuration" do
     it "accepts a Logger instance" do
       logger = Logger.new($stdout)

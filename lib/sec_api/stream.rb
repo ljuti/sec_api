@@ -35,6 +35,12 @@ module SecApi
   #   and expects a pong response within 5 seconds. This is handled automatically
   #   by faye-websocket - no application code is required.
   #
+  # @note **Sequential Processing:** Callbacks are invoked synchronously in the
+  #   order filings are received. Each callback must complete before the next
+  #   filing is processed. This guarantees ordering but means slow callbacks
+  #   delay subsequent filings. For high-throughput scenarios, delegate work
+  #   to background jobs.
+  #
   class Stream
     # WebSocket close codes
     CLOSE_NORMAL = 1000
@@ -100,6 +106,34 @@ module SecApi
     #
     # @example Non-blocking subscription in separate thread
     #   Thread.new { client.stream.subscribe { |f| queue.push(f) } }
+    #
+    # @example Sidekiq job enqueueing (AC: #5)
+    #   client.stream.subscribe(tickers: ["AAPL"]) do |filing|
+    #     # Enqueue job and return quickly - don't block the reactor
+    #     ProcessFilingJob.perform_async(filing.accession_no, filing.ticker)
+    #   end
+    #
+    # @example ActiveJob integration (AC: #5)
+    #   client.stream.subscribe do |filing|
+    #     ProcessFilingJob.perform_later(
+    #       accession_no: filing.accession_no,
+    #       form_type: filing.form_type
+    #     )
+    #   end
+    #
+    # @example Thread pool processing (AC: #5)
+    #   pool = Concurrent::ThreadPoolExecutor.new(max_threads: 10)
+    #   client.stream.subscribe do |filing|
+    #     pool.post { process_filing(filing) }
+    #   end
+    #
+    # @note Callbacks execute synchronously in the EventMachine reactor thread.
+    #   Long-running operations should be delegated to background jobs or thread
+    #   pools to avoid blocking subsequent filing deliveries. Keep callbacks fast.
+    #
+    # @note Callback exceptions are caught and logged (if logger configured).
+    #   Use {Config#on_callback_error} for custom error handling. The stream
+    #   continues processing after callback exceptions.
     #
     def subscribe(tickers: nil, form_types: nil, &block)
       raise ArgumentError, "Block required for subscribe" unless block_given?
@@ -227,7 +261,7 @@ module SecApi
         # Apply filters before callback (Story 6.2)
         next unless matches_filters?(filing)
 
-        @callback.call(filing)
+        invoke_callback_safely(filing)
       end
     rescue JSON::ParserError => e
       # Malformed JSON - log via client logger if available
@@ -322,6 +356,67 @@ module SecApi
       rescue
         # Don't let logging errors break message processing
       end
+    end
+
+    # Invokes the user callback safely, catching and handling any exceptions.
+    #
+    # When a callback raises an exception, it is logged (if logger configured)
+    # and the on_callback_error callback is invoked (if configured). The stream
+    # continues processing subsequent filings.
+    #
+    # @param filing [SecApi::Objects::StreamFiling] The filing to pass to callback
+    # @api private
+    def invoke_callback_safely(filing)
+      @callback.call(filing)
+    rescue => e
+      log_callback_error(e, filing)
+      invoke_on_callback_error(e, filing)
+      # Continue processing - don't re-raise
+    end
+
+    # Logs callback exceptions via client logger if configured.
+    #
+    # @param error [Exception] The exception that occurred
+    # @param filing [SecApi::Objects::StreamFiling] The filing being processed
+    # @api private
+    def log_callback_error(error, filing)
+      return unless @client.config.logger
+
+      log_data = {
+        event: "secapi.stream.callback_error",
+        error_class: error.class.name,
+        error_message: error.message,
+        accession_no: filing.accession_no,
+        ticker: filing.ticker,
+        form_type: filing.form_type
+      }
+
+      begin
+        log_level = @client.config.log_level || :error
+        @client.config.logger.send(log_level) { log_data.to_json }
+      rescue
+        # Intentionally empty: logging failures must not break stream processing.
+        # The stream's resilience takes priority over error visibility.
+      end
+    end
+
+    # Invokes the on_callback_error callback if configured.
+    #
+    # @param error [Exception] The exception that occurred
+    # @param filing [SecApi::Objects::StreamFiling] The filing being processed
+    # @api private
+    def invoke_on_callback_error(error, filing)
+      return unless @client.config.on_callback_error
+
+      @client.config.on_callback_error.call(
+        error: error,
+        filing: filing,
+        accession_no: filing.accession_no,
+        ticker: filing.ticker
+      )
+    rescue
+      # Intentionally empty: error callback failures must not break stream processing.
+      # Prevents meta-errors (errors in error handlers) from crashing the stream.
     end
 
     # Normalizes filter to uppercase strings for case-insensitive matching.
