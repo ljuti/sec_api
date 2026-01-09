@@ -75,6 +75,12 @@ module SecApi
       #   @return [Array<Hash>, nil] XBRL and other data files
       attribute? :data_files, Types::Array.of(Types::Hash).optional
 
+      # @!attribute [r] received_at
+      #   @return [Time] Timestamp when this filing was received by the client.
+      #     Used for calculating delivery latency from sec-api.io to client.
+      #     Defaults to Time.now when filing is created.
+      attribute :received_at, Types::Time.default { Time.now }
+
       # Override constructor to ensure deep immutability.
       #
       # @api private
@@ -137,6 +143,51 @@ module SecApi
       #
       def txt_url
         link_to_txt
+      end
+
+      # Calculate delivery latency in milliseconds.
+      #
+      # Measures time between when the filing was published to sec-api.io
+      # (filed_at) and when it was received by the client (received_at).
+      #
+      # @return [Integer, nil] Latency in milliseconds, or nil if timestamps unavailable
+      # @example
+      #   filing.latency_ms #=> 1523
+      #
+      def latency_ms
+        return nil unless filed_at && received_at
+
+        filed_time = Time.parse(filed_at)
+        ((received_at - filed_time) * 1000).round
+      rescue ArgumentError
+        nil  # Invalid date string
+      end
+
+      # Calculate delivery latency in seconds.
+      #
+      # @return [Float, nil] Latency in seconds, or nil if timestamps unavailable
+      # @example
+      #   filing.latency_seconds #=> 1.523
+      #
+      def latency_seconds
+        ms = latency_ms
+        ms ? ms / 1000.0 : nil
+      end
+
+      # Check if filing was delivered within the specified latency threshold.
+      #
+      # The default threshold of 120 seconds (2 minutes) corresponds to NFR1.
+      #
+      # @param seconds [Numeric] Maximum acceptable latency in seconds (default: 120)
+      # @return [Boolean] true if latency is within threshold, false otherwise
+      # @example
+      #   filing.within_latency_threshold?      #=> true (if < 2 minutes)
+      #   filing.within_latency_threshold?(60)  #=> false (if > 1 minute)
+      #
+      def within_latency_threshold?(seconds = 120)
+        latency = latency_seconds
+        return false if latency.nil?
+        latency <= seconds
       end
     end
   end

@@ -188,6 +188,62 @@ module SecApi
   #       }
   #     )
   #
+  # @!attribute [rw] on_reconnect
+  #   @return [Proc, nil] Optional callback invoked when WebSocket reconnection succeeds.
+  #     Receives a hash with the following keys:
+  #     - :attempt_count [Integer] - Number of reconnection attempts before success
+  #     - :downtime_seconds [Float] - Total time disconnected in seconds
+  #
+  #   @example Track reconnections in metrics
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       on_reconnect: ->(info) {
+  #         StatsD.increment("sec_api.stream.reconnected")
+  #         StatsD.gauge("sec_api.stream.downtime", info[:downtime_seconds])
+  #       }
+  #     )
+  #
+  # @!attribute [rw] stream_max_reconnect_attempts
+  #   @return [Integer] Maximum number of WebSocket reconnection attempts before
+  #     giving up and raising ReconnectionError. Default is 10.
+  #     Set to 0 to disable auto-reconnect entirely.
+  #
+  # @!attribute [rw] stream_initial_reconnect_delay
+  #   @return [Float] Initial delay in seconds before the first reconnection attempt.
+  #     Subsequent attempts use exponential backoff. Default is 1.0 second.
+  #
+  # @!attribute [rw] stream_max_reconnect_delay
+  #   @return [Float] Maximum delay in seconds between reconnection attempts.
+  #     Caps the exponential backoff to prevent excessively long waits. Default is 60.0 seconds.
+  #
+  # @!attribute [rw] stream_backoff_multiplier
+  #   @return [Integer, Float] Multiplier for exponential backoff between reconnection
+  #     attempts. Delay formula: min(initial * (multiplier ^ attempt), max_delay).
+  #     Default is 2 (delays: 1s, 2s, 4s, 8s, ..., capped at max).
+  #
+  # @!attribute [rw] on_filing
+  #   @return [Proc, nil] Optional callback invoked when a filing is received via stream.
+  #     Called for ALL filings before filtering and before the user callback. Use for
+  #     instrumentation and latency monitoring of the full filing stream.
+  #   @example Track filing latency with StatsD
+  #     on_filing: ->(filing:, latency_ms:, received_at:) {
+  #       StatsD.histogram("sec_api.stream.latency_ms", latency_ms)
+  #       StatsD.increment("sec_api.stream.filings_received")
+  #     }
+  #   @example Log latency with structured logging
+  #     on_filing: ->(filing:, latency_ms:, received_at:) {
+  #       Rails.logger.info("Filing received", {
+  #         ticker: filing.ticker,
+  #         form_type: filing.form_type,
+  #         latency_ms: latency_ms
+  #       })
+  #     }
+  #
+  # @!attribute [rw] stream_latency_warning_threshold
+  #   @return [Float] Latency threshold in seconds before logging a warning (default: 120).
+  #     When a filing's delivery latency exceeds this threshold, a warning is logged.
+  #     Set to 120 seconds (2 minutes) to align with NFR1 requirements.
+  #
   class Config < Anyway::Config
     config_name :secapi
 
@@ -207,8 +263,15 @@ module SecApi
       :on_dequeue,
       :on_excessive_wait,
       :on_callback_error,
+      :on_reconnect,
+      :on_filing,
       :logger,
-      :log_level
+      :log_level,
+      :stream_max_reconnect_attempts,
+      :stream_initial_reconnect_delay,
+      :stream_max_reconnect_delay,
+      :stream_backoff_multiplier,
+      :stream_latency_warning_threshold
 
     # Sensible defaults
     def initialize(*)
@@ -222,6 +285,13 @@ module SecApi
       self.rate_limit_threshold ||= 0.1
       self.queue_wait_warning_threshold ||= 300  # 5 minutes
       self.log_level ||= :info
+      # Stream reconnection defaults (Story 6.4)
+      self.stream_max_reconnect_attempts ||= 10
+      self.stream_initial_reconnect_delay ||= 1.0
+      self.stream_max_reconnect_delay ||= 60.0
+      self.stream_backoff_multiplier ||= 2
+      # Stream latency defaults (Story 6.5)
+      self.stream_latency_warning_threshold ||= 120.0
     end
 
     # Validation called by Client

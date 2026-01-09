@@ -385,4 +385,126 @@ RSpec.describe SecApi::Config do
       expect(config.log_level).to eq(:info)
     end
   end
+
+  describe "stream reconnection configuration (Story 6.4)" do
+    let(:config) { SecApi::Config.new(api_key: "valid_test_key_123") }
+
+    describe "default values" do
+      it "sets stream_max_reconnect_attempts to 10" do
+        expect(config.stream_max_reconnect_attempts).to eq(10)
+      end
+
+      it "sets stream_initial_reconnect_delay to 1.0 seconds" do
+        expect(config.stream_initial_reconnect_delay).to eq(1.0)
+      end
+
+      it "sets stream_max_reconnect_delay to 60.0 seconds" do
+        expect(config.stream_max_reconnect_delay).to eq(60.0)
+      end
+
+      it "sets stream_backoff_multiplier to 2" do
+        expect(config.stream_backoff_multiplier).to eq(2)
+      end
+    end
+
+    describe "custom values" do
+      it "accepts custom stream_max_reconnect_attempts" do
+        config = SecApi::Config.new(api_key: "valid_test_key_123", stream_max_reconnect_attempts: 5)
+        expect(config.stream_max_reconnect_attempts).to eq(5)
+      end
+
+      it "accepts custom stream_initial_reconnect_delay" do
+        config = SecApi::Config.new(api_key: "valid_test_key_123", stream_initial_reconnect_delay: 2.0)
+        expect(config.stream_initial_reconnect_delay).to eq(2.0)
+      end
+
+      it "accepts custom stream_max_reconnect_delay" do
+        config = SecApi::Config.new(api_key: "valid_test_key_123", stream_max_reconnect_delay: 120.0)
+        expect(config.stream_max_reconnect_delay).to eq(120.0)
+      end
+
+      it "accepts custom stream_backoff_multiplier" do
+        config = SecApi::Config.new(api_key: "valid_test_key_123", stream_backoff_multiplier: 3)
+        expect(config.stream_backoff_multiplier).to eq(3)
+      end
+    end
+
+    describe "environment variable loading" do
+      it "loads stream_max_reconnect_attempts from SECAPI_STREAM_MAX_RECONNECT_ATTEMPTS" do
+        ENV["SECAPI_STREAM_MAX_RECONNECT_ATTEMPTS"] = "15"
+        config = SecApi::Config.new(api_key: "valid_test_key_123")
+        expect(config.stream_max_reconnect_attempts).to eq(15)
+      end
+
+      it "loads stream_initial_reconnect_delay from SECAPI_STREAM_INITIAL_RECONNECT_DELAY" do
+        ENV["SECAPI_STREAM_INITIAL_RECONNECT_DELAY"] = "3.0"
+        config = SecApi::Config.new(api_key: "valid_test_key_123")
+        expect(config.stream_initial_reconnect_delay).to eq(3.0)
+      end
+    end
+  end
+
+  describe "on_reconnect callback (Story 6.4)" do
+    it "accepts a callback proc" do
+      callback = ->(info) { puts info }
+      config = SecApi::Config.new(api_key: "valid_test_key_123", on_reconnect: callback)
+      expect(config.on_reconnect).to eq(callback)
+    end
+
+    it "defaults to nil when not provided" do
+      config = SecApi::Config.new(api_key: "valid_test_key_123")
+      expect(config.on_reconnect).to be_nil
+    end
+
+    it "can be invoked with reconnection info hash" do
+      received_info = nil
+      callback = ->(info) { received_info = info }
+      config = SecApi::Config.new(api_key: "valid_test_key_123", on_reconnect: callback)
+
+      config.on_reconnect.call(attempt_count: 3, downtime_seconds: 15.5)
+
+      expect(received_info[:attempt_count]).to eq(3)
+      expect(received_info[:downtime_seconds]).to eq(15.5)
+    end
+  end
+
+  describe "on_filing callback (Story 6.5)" do
+    it "accepts a callback proc" do
+      callback = ->(filing:, latency_ms:, received_at:) { puts latency_ms }
+      config = SecApi::Config.new(api_key: "valid_test_key_123", on_filing: callback)
+      expect(config.on_filing).to eq(callback)
+    end
+
+    it "defaults to nil when not provided" do
+      config = SecApi::Config.new(api_key: "valid_test_key_123")
+      expect(config.on_filing).to be_nil
+    end
+
+    it "can be invoked with filing info hash" do
+      received_args = nil
+      callback = ->(filing:, latency_ms:, received_at:) {
+        received_args = {filing: filing, latency_ms: latency_ms, received_at: received_at}
+      }
+      config = SecApi::Config.new(api_key: "valid_test_key_123", on_filing: callback)
+
+      now = Time.now
+      config.on_filing.call(filing: "mock_filing", latency_ms: 1500, received_at: now)
+
+      expect(received_args[:filing]).to eq("mock_filing")
+      expect(received_args[:latency_ms]).to eq(1500)
+      expect(received_args[:received_at]).to eq(now)
+    end
+  end
+
+  describe "stream_latency_warning_threshold (Story 6.5)" do
+    it "defaults to 120 seconds (2 minutes)" do
+      config = SecApi::Config.new(api_key: "valid_test_key_123")
+      expect(config.stream_latency_warning_threshold).to eq(120.0)
+    end
+
+    it "accepts custom threshold value" do
+      config = SecApi::Config.new(api_key: "valid_test_key_123", stream_latency_warning_threshold: 60.0)
+      expect(config.stream_latency_warning_threshold).to eq(60.0)
+    end
+  end
 end

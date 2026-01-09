@@ -41,6 +41,55 @@ module SecApi
   #   delay subsequent filings. For high-throughput scenarios, delegate work
   #   to background jobs.
   #
+  # @note **Auto-Reconnect:** When the WebSocket connection is lost (network
+  #   issues, server restart), the stream automatically attempts to reconnect
+  #   using exponential backoff. After 10 failed attempts (by default), a
+  #   {ReconnectionError} is raised. Configure via {Config#stream_max_reconnect_attempts},
+  #   {Config#stream_initial_reconnect_delay}, {Config#stream_max_reconnect_delay},
+  #   and {Config#stream_backoff_multiplier}.
+  #
+  # @note **Best-Effort Delivery:** Filings published during a disconnection
+  #   window are **not** automatically replayed after reconnection. This is a
+  #   "best-effort" delivery model. If you require guaranteed delivery, track
+  #   the last received filing timestamp and use the Query API to backfill
+  #   any gaps after reconnection. See the backfill example below.
+  #
+  # @note **No Ordering Guarantees During Reconnection:** While connected,
+  #   filings arrive in order. However, during a reconnection gap, filings
+  #   may be published to EDGAR that your application never sees. After
+  #   backfilling, the combined set may not be in strict chronological order.
+  #   Sort by filed_at if ordering is critical.
+  #
+  # @example Tracking last received filing for backfill detection
+  #   last_filed_at = nil
+  #
+  #   client.stream.subscribe do |filing|
+  #     last_filed_at = filing.filed_at
+  #     process_filing(filing)
+  #   end
+  #
+  # @example Backfilling missed filings after reconnection
+  #   disconnect_time = nil
+  #   reconnect_time = nil
+  #
+  #   config = SecApi::Config.new(
+  #     api_key: "...",
+  #     on_reconnect: ->(info) {
+  #       reconnect_time = Time.now
+  #       # info[:downtime_seconds] tells you how long you were disconnected
+  #       Rails.logger.info("Reconnected after #{info[:downtime_seconds]}s downtime")
+  #     }
+  #   )
+  #
+  #   client = SecApi::Client.new(config: config)
+  #
+  #   # After reconnection, backfill via Query API:
+  #   # missed_filings = client.query.filings(
+  #   #   filed_from: disconnect_time,
+  #   #   filed_to: reconnect_time,
+  #   #   tickers: ["AAPL"]  # same filters as stream
+  #   # )
+  #
   class Stream
     # WebSocket close codes
     CLOSE_NORMAL = 1000
@@ -63,6 +112,11 @@ module SecApi
       @tickers = nil
       @form_types = nil
       @mutex = Mutex.new
+      # Reconnection state (Story 6.4)
+      @reconnect_attempts = 0
+      @should_reconnect = true
+      @reconnecting = false
+      @disconnect_time = nil
     end
 
     # Subscribe to real-time filing notifications with optional filtering.
@@ -157,6 +211,9 @@ module SecApi
     #
     def close
       @mutex.synchronize do
+        # Prevent reconnection attempts after explicit close
+        @should_reconnect = false
+
         return unless @ws
 
         @ws.close(CLOSE_NORMAL, "Client requested close")
@@ -223,7 +280,18 @@ module SecApi
     # @api private
     def setup_handlers
       @ws.on :open do |_event|
-        # Connection established, ready to receive filings
+        @running = true
+
+        if @reconnecting
+          # Reconnection succeeded!
+          downtime = @disconnect_time ? Time.now - @disconnect_time : 0
+          log_reconnect_success(downtime)
+          invoke_on_reconnect_callback(@reconnect_attempts, downtime)
+
+          @reconnect_attempts = 0
+          @reconnecting = false
+          @disconnect_time = nil
+        end
       end
 
       @ws.on :message do |event|
@@ -251,12 +319,27 @@ module SecApi
       # Prevent callbacks after close (Task 5 requirement)
       return unless @running
 
+      # Capture receive timestamp FIRST before any processing (Story 6.5, Task 5)
+      received_at = Time.now
+
       filings = JSON.parse(data)
       filings.each do |filing_data|
         # Check again in loop in case close() called during iteration
         break unless @running
 
-        filing = Objects::StreamFiling.new(transform_keys(filing_data))
+        # Pass received_at to constructor (Story 6.5, Task 5)
+        filing = Objects::StreamFiling.new(
+          transform_keys(filing_data).merge(received_at: received_at)
+        )
+
+        # Log filing receipt with latency (Story 6.5, Task 7)
+        log_filing_received(filing)
+
+        # Check latency threshold and log warning if exceeded (Story 6.5, Task 8)
+        check_latency_threshold(filing)
+
+        # Invoke instrumentation callback (Story 6.5, Task 6)
+        invoke_on_filing_callback(filing)
 
         # Apply filters before callback (Story 6.2)
         next unless matches_filters?(filing)
@@ -284,13 +367,28 @@ module SecApi
 
     # Handles WebSocket close events.
     #
+    # Triggers auto-reconnection for abnormal closures when should_reconnect is true.
+    # For non-reconnectable closures, raises appropriate errors.
+    #
     # @param code [Integer] WebSocket close code
     # @param reason [String] Close reason message
     # @api private
     def handle_close(code, reason)
+      was_running = false
       @mutex.synchronize do
+        was_running = @running
         @running = false
         @ws = nil
+      end
+
+      # Only attempt reconnect if:
+      # 1. We were running (not a fresh connection failure)
+      # 2. User hasn't called close()
+      # 3. It's an abnormal close (not intentional)
+      if was_running && @should_reconnect && reconnectable_close?(code)
+        @disconnect_time = Time.now
+        schedule_reconnect
+        return  # Don't stop EM or raise - let reconnection happen
       end
 
       EM.stop_event_loop if EM.reactor_running?
@@ -417,6 +515,242 @@ module SecApi
     rescue
       # Intentionally empty: error callback failures must not break stream processing.
       # Prevents meta-errors (errors in error handlers) from crashing the stream.
+    end
+
+    # Invokes the on_reconnect callback if configured.
+    #
+    # Called after a successful reconnection to notify the application of the
+    # reconnection event. Exceptions are silently caught to prevent callback
+    # errors from disrupting the stream.
+    #
+    # @param attempt_count [Integer] Number of reconnection attempts before success
+    # @param downtime_seconds [Float] Total time disconnected in seconds
+    # @api private
+    def invoke_on_reconnect_callback(attempt_count, downtime_seconds)
+      return unless @client.config.on_reconnect
+
+      @client.config.on_reconnect.call(
+        attempt_count: attempt_count,
+        downtime_seconds: downtime_seconds
+      )
+    rescue
+      # Intentionally empty: reconnect callback failures must not break stream.
+      # The stream must remain operational regardless of callback behavior.
+    end
+
+    # Determines if a WebSocket close code indicates a reconnectable failure.
+    #
+    # Only reconnect for abnormal closure (network issues, server restart).
+    # Do NOT reconnect for: normal close, auth failure, policy violation.
+    #
+    # @param code [Integer] WebSocket close code
+    # @return [Boolean] true if reconnection should be attempted
+    # @api private
+    def reconnectable_close?(code)
+      code == CLOSE_ABNORMAL || code.between?(1011, 1015)
+    end
+
+    # Schedules a reconnection attempt after the calculated delay.
+    #
+    # @api private
+    def schedule_reconnect
+      delay = calculate_reconnect_delay
+      log_reconnect_attempt(delay)
+
+      EM.add_timer(delay) do
+        attempt_reconnect
+      end
+    end
+
+    # Attempts to reconnect to the WebSocket server.
+    #
+    # Increments the attempt counter and creates a new WebSocket connection.
+    # If max attempts exceeded, triggers reconnection failure handling.
+    #
+    # @api private
+    def attempt_reconnect
+      @reconnect_attempts += 1
+
+      if @reconnect_attempts > @client.config.stream_max_reconnect_attempts
+        handle_reconnection_failure
+        return
+      end
+
+      @reconnecting = true
+      @ws = Faye::WebSocket::Client.new(build_url)
+      setup_handlers
+    end
+
+    # Logs a reconnection attempt.
+    #
+    # @param delay [Float] Delay in seconds before this attempt
+    # @api private
+    def log_reconnect_attempt(delay)
+      return unless @client.config.logger
+
+      elapsed = @disconnect_time ? Time.now - @disconnect_time : 0
+      log_data = {
+        event: "secapi.stream.reconnect_attempt",
+        attempt: @reconnect_attempts,
+        max_attempts: @client.config.stream_max_reconnect_attempts,
+        delay: delay.round(2),
+        elapsed_seconds: elapsed.round(1)
+      }
+
+      begin
+        @client.config.logger.info { log_data.to_json }
+      rescue
+        # Don't let logging errors break reconnection
+      end
+    end
+
+    # Logs a successful reconnection.
+    #
+    # @param downtime [Float] Total downtime in seconds
+    # @api private
+    def log_reconnect_success(downtime)
+      return unless @client.config.logger
+
+      log_data = {
+        event: "secapi.stream.reconnect_success",
+        attempts: @reconnect_attempts,
+        downtime_seconds: downtime.round(1)
+      }
+
+      begin
+        @client.config.logger.info { log_data.to_json }
+      rescue
+        # Don't let logging errors break reconnection
+      end
+    end
+
+    # Logs filing receipt with latency information (Story 6.5, Task 7).
+    #
+    # @param filing [Objects::StreamFiling] The received filing
+    # @api private
+    def log_filing_received(filing)
+      return unless @client.config.logger
+
+      log_data = {
+        event: "secapi.stream.filing_received",
+        accession_no: filing.accession_no,
+        ticker: filing.ticker,
+        form_type: filing.form_type,
+        latency_ms: filing.latency_ms,
+        received_at: filing.received_at.iso8601(3)
+      }
+
+      begin
+        @client.config.logger.info { log_data.to_json }
+      rescue
+        # Don't let logging errors break stream processing
+      end
+    end
+
+    # Checks latency against threshold and logs warning if exceeded (Story 6.5, Task 8).
+    #
+    # @param filing [Objects::StreamFiling] The received filing
+    # @api private
+    def check_latency_threshold(filing)
+      return unless @client.config.logger
+      return unless filing.latency_seconds
+
+      threshold = @client.config.stream_latency_warning_threshold
+      return if filing.latency_seconds <= threshold
+
+      log_data = {
+        event: "secapi.stream.latency_warning",
+        accession_no: filing.accession_no,
+        ticker: filing.ticker,
+        form_type: filing.form_type,
+        latency_ms: filing.latency_ms,
+        threshold_seconds: threshold
+      }
+
+      begin
+        @client.config.logger.warn { log_data.to_json }
+      rescue
+        # Don't let logging errors break stream processing
+      end
+    end
+
+    # Invokes the on_filing instrumentation callback (Story 6.5, Task 6).
+    #
+    # @param filing [Objects::StreamFiling] The received filing
+    # @api private
+    def invoke_on_filing_callback(filing)
+      return unless @client.config.on_filing
+
+      begin
+        @client.config.on_filing.call(
+          filing: filing,
+          latency_ms: filing.latency_ms,
+          received_at: filing.received_at
+        )
+      rescue => e
+        # Don't let callback errors break stream processing
+        # Optionally log the error
+        log_on_filing_callback_error(filing, e)
+      end
+    end
+
+    # Logs errors from on_filing callback.
+    #
+    # @param filing [Objects::StreamFiling] The filing that caused the error
+    # @param error [Exception] The error that was raised
+    # @api private
+    def log_on_filing_callback_error(filing, error)
+      return unless @client.config.logger
+
+      log_data = {
+        event: "secapi.stream.on_filing_callback_error",
+        accession_no: filing.accession_no,
+        ticker: filing.ticker,
+        error_class: error.class.name,
+        error_message: error.message
+      }
+
+      begin
+        @client.config.logger.warn { log_data.to_json }
+      rescue
+        # Don't let logging errors break stream processing
+      end
+    end
+
+    # Handles reconnection failure after maximum attempts exceeded.
+    #
+    # @api private
+    def handle_reconnection_failure
+      @running = false
+      @reconnecting = false
+      EM.stop_event_loop if EM.reactor_running?
+
+      downtime = @disconnect_time ? Time.now - @disconnect_time : 0
+      raise ReconnectionError.new(
+        message: "WebSocket reconnection failed after #{@reconnect_attempts} attempts " \
+                 "(#{downtime.round(1)}s downtime). Check network connectivity.",
+        attempts: @reconnect_attempts,
+        downtime_seconds: downtime
+      )
+    end
+
+    # Calculates delay before next reconnection attempt using exponential backoff.
+    #
+    # Formula: min(initial * (multiplier ^ attempt), max_delay) * jitter
+    # Jitter adds +-10% randomness to prevent thundering herd when multiple
+    # clients reconnect simultaneously.
+    #
+    # @return [Float] Delay in seconds before next attempt
+    # @api private
+    def calculate_reconnect_delay
+      config = @client.config
+      base_delay = config.stream_initial_reconnect_delay *
+        (config.stream_backoff_multiplier**@reconnect_attempts)
+      capped_delay = [base_delay, config.stream_max_reconnect_delay].min
+
+      # Add jitter: random value between 0.9 and 1.1 of the delay
+      jitter_factor = 0.9 + rand * 0.2
+      capped_delay * jitter_factor
     end
 
     # Normalizes filter to uppercase strings for case-insensitive matching.

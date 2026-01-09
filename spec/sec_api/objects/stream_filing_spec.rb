@@ -167,6 +167,133 @@ RSpec.describe SecApi::Objects::StreamFiling do
     end
   end
 
+  describe "#received_at (Story 6.5)" do
+    it "defaults to Time.now when not provided" do
+      before_time = Time.now
+      filing = described_class.new(valid_attributes)
+      after_time = Time.now
+
+      expect(filing.received_at).to be_a(Time)
+      expect(filing.received_at).to be >= before_time
+      expect(filing.received_at).to be <= after_time
+    end
+
+    it "accepts explicit received_at value" do
+      explicit_time = Time.now - 60
+      attrs = valid_attributes.merge(received_at: explicit_time)
+      filing = described_class.new(attrs)
+
+      expect(filing.received_at).to eq(explicit_time)
+    end
+
+    it "is immutable with the rest of the object" do
+      filing = described_class.new(valid_attributes)
+      expect(filing).to be_frozen
+      expect { filing.instance_variable_set(:@received_at, Time.now) }.to raise_error(FrozenError)
+    end
+  end
+
+  describe "#latency_ms (Story 6.5)" do
+    it "calculates milliseconds between filed_at and received_at" do
+      filed = Time.now - 1.5  # 1.5 seconds ago
+      received = Time.now
+      attrs = valid_attributes.merge(
+        filed_at: filed.iso8601(3),
+        received_at: received
+      )
+      filing = described_class.new(attrs)
+
+      expect(filing.latency_ms).to be_within(100).of(1500)
+    end
+
+    it "returns nil when filed_at is invalid date string" do
+      attrs = valid_attributes.merge(filed_at: "invalid-date")
+      filing = described_class.new(attrs)
+
+      expect(filing.latency_ms).to be_nil
+    end
+
+    it "handles negative latency (filed_at in future due to clock skew)" do
+      filed = Time.now + 10  # 10 seconds in future
+      received = Time.now
+      attrs = valid_attributes.merge(
+        filed_at: filed.iso8601(3),
+        received_at: received
+      )
+      filing = described_class.new(attrs)
+
+      expect(filing.latency_ms).to be < 0
+    end
+  end
+
+  describe "#latency_seconds (Story 6.5)" do
+    it "returns latency in seconds as Float" do
+      filed = Time.now - 1.5
+      received = Time.now
+      attrs = valid_attributes.merge(
+        filed_at: filed.iso8601(3),
+        received_at: received
+      )
+      filing = described_class.new(attrs)
+
+      expect(filing.latency_seconds).to be_a(Float)
+      expect(filing.latency_seconds).to be_within(0.2).of(1.5)
+    end
+
+    it "returns nil when latency_ms is nil" do
+      attrs = valid_attributes.merge(filed_at: "invalid-date")
+      filing = described_class.new(attrs)
+
+      expect(filing.latency_seconds).to be_nil
+    end
+  end
+
+  describe "#within_latency_threshold? (Story 6.5)" do
+    it "returns true when latency is under default threshold (120s)" do
+      filed = Time.now - 60  # 60 seconds = 1 minute
+      received = Time.now
+      attrs = valid_attributes.merge(
+        filed_at: filed.iso8601(3),
+        received_at: received
+      )
+      filing = described_class.new(attrs)
+
+      expect(filing.within_latency_threshold?).to be true
+    end
+
+    it "returns false when latency exceeds default threshold (120s)" do
+      filed = Time.now - 180  # 180 seconds = 3 minutes
+      received = Time.now
+      attrs = valid_attributes.merge(
+        filed_at: filed.iso8601(3),
+        received_at: received
+      )
+      filing = described_class.new(attrs)
+
+      expect(filing.within_latency_threshold?).to be false
+    end
+
+    it "accepts custom threshold in seconds" do
+      filed = Time.now - 90  # 90 seconds
+      received = Time.now
+      attrs = valid_attributes.merge(
+        filed_at: filed.iso8601(3),
+        received_at: received
+      )
+      filing = described_class.new(attrs)
+
+      expect(filing.within_latency_threshold?(60)).to be false
+      expect(filing.within_latency_threshold?(120)).to be true
+    end
+
+    it "returns false when latency cannot be calculated" do
+      attrs = valid_attributes.merge(filed_at: "invalid-date")
+      filing = described_class.new(attrs)
+
+      expect(filing.within_latency_threshold?).to be false
+    end
+  end
+
   describe "convenience methods (Story 6.3)" do
     describe "#url" do
       it "returns link_to_html when available" do
