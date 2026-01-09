@@ -28,6 +28,18 @@ module SecApi
     # @raise [ServerError] when API returns 5xx (Server Error)
     # @raise [NetworkError] when network issues occur (timeout, connection failure, SSL error)
     class ErrorHandler < Faraday::Middleware
+      include SecApi::CallbackHelper
+
+      # Initializes the error handler middleware.
+      #
+      # @param app [Faraday::Middleware] The next middleware in the stack
+      # @param options [Hash] Configuration options
+      # @option options [SecApi::Config] :config The config object containing on_error callback
+      def initialize(app, options = {})
+        super(app)
+        @config = options[:config]
+      end
+
       def call(env)
         response = @app.call(env)
         handle_response(response.env)
@@ -37,20 +49,29 @@ module SecApi
         # so retry middleware can catch it
         raise e
       rescue Faraday::TimeoutError => e
-        raise NetworkError,
+        # Don't invoke on_error here - TransientErrors will be retried.
+        # on_error is invoked by Instrumentation middleware after all retries exhausted.
+        raise NetworkError.new(
           "Request timeout. " \
           "Check network connectivity or increase request_timeout in configuration. " \
           "Original error: #{e.message}."
+        )
       rescue Faraday::ConnectionFailed => e
-        raise NetworkError,
+        # Don't invoke on_error here - TransientErrors will be retried.
+        # on_error is invoked by Instrumentation middleware after all retries exhausted.
+        raise NetworkError.new(
           "Connection failed: #{e.message}. " \
           "Verify network connectivity and sec-api.io availability. " \
           "This is a temporary issue that will be retried automatically."
+        )
       rescue Faraday::SSLError => e
-        raise NetworkError,
+        # Don't invoke on_error here - TransientErrors will be retried.
+        # on_error is invoked by Instrumentation middleware after all retries exhausted.
+        raise NetworkError.new(
           "SSL/TLS error: #{e.message}. " \
           "This may indicate certificate validation issues or secure connection problems. " \
           "Verify your system's SSL certificates are up to date."
+        )
       end
 
       private
@@ -59,41 +80,63 @@ module SecApi
         # Only handle error responses - skip success responses
         return if env[:status] >= 200 && env[:status] < 300
 
+        error = build_error_for_status(env)
+        return unless error
+
+        # NOTE: on_error callback is NOT invoked here.
+        # All on_error invocations happen in Instrumentation middleware after the exception
+        # escapes all middleware (including retry). This ensures on_error is called exactly once,
+        # only when the request ultimately fails (after all retries exhausted for TransientError,
+        # or immediately for PermanentError).
+        raise error
+      end
+
+      # Builds the appropriate error for the HTTP status code.
+      #
+      # @param env [Faraday::Env] The response environment
+      # @return [SecApi::Error, nil] The appropriate error, or nil for unhandled status
+      def build_error_for_status(env)
         case env[:status]
         when 400
-          raise ValidationError,
+          ValidationError.new(
             "Bad request (400): The request was malformed or contains invalid parameters. " \
             "Check your query parameters, ticker symbols, or search criteria."
+          )
         when 401
-          raise AuthenticationError,
+          AuthenticationError.new(
             "API authentication failed (401 Unauthorized). " \
             "Verify your API key in config/secapi.yml or SECAPI_API_KEY environment variable. " \
             "Get your API key from https://sec-api.io."
+          )
         when 403
-          raise AuthenticationError,
+          AuthenticationError.new(
             "Access forbidden (403): Your API key does not have permission for this resource. " \
             "Verify your subscription plan at https://sec-api.io or contact support."
+          )
         when 404
-          raise NotFoundError,
+          NotFoundError.new(
             "Resource not found (404): #{env[:url]&.path || "unknown"}. " \
             "Check ticker symbol, CIK, or filing identifier."
+          )
         when 422
-          raise ValidationError,
+          ValidationError.new(
             "Unprocessable entity (422): The request was valid but could not be processed. " \
             "This may indicate invalid query logic or unsupported parameter combinations."
+          )
         when 429
           retry_after = parse_retry_after(env[:response_headers])
           reset_at = parse_reset_timestamp(env[:response_headers])
 
-          raise RateLimitError.new(
+          RateLimitError.new(
             build_rate_limit_message(retry_after, reset_at),
             retry_after: retry_after,
             reset_at: reset_at
           )
         when 500..504
-          raise ServerError,
+          ServerError.new(
             "sec-api.io server error (#{env[:status]}). " \
             "automatic retry attempts exhausted. This may indicate a prolonged outage."
+          )
         end
       end
 
@@ -152,6 +195,13 @@ module SecApi
         parts << "Automatic retry attempts exhausted. Consider implementing backoff or reducing request rate."
         parts.join(" ")
       end
+
+      # NOTE: on_error callback is NOT invoked here.
+      # All on_error invocations happen in Instrumentation middleware (first in stack)
+      # after exceptions escape all middleware (including retry). This ensures on_error
+      # is called exactly once, only when the request ultimately fails.
+
+      # log_callback_error is provided by CallbackHelper module (kept for potential future use)
     end
   end
 end

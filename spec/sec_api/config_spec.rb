@@ -507,4 +507,106 @@ RSpec.describe SecApi::Config do
       expect(config.stream_latency_warning_threshold).to eq(60.0)
     end
   end
+
+  describe "on_request callback (Story 7.1)" do
+    it "accepts a callback proc" do
+      callback = ->(request_id:, method:, url:, headers:) { puts request_id }
+      config = SecApi::Config.new(api_key: "valid_test_key_123", on_request: callback)
+      expect(config.on_request).to eq(callback)
+    end
+
+    it "defaults to nil when not provided" do
+      config = SecApi::Config.new(api_key: "valid_test_key_123")
+      expect(config.on_request).to be_nil
+    end
+
+    it "can be invoked with request context hash" do
+      received_args = nil
+      callback = ->(request_id:, method:, url:, headers:) {
+        received_args = {request_id: request_id, method: method, url: url, headers: headers}
+      }
+      config = SecApi::Config.new(api_key: "valid_test_key_123", on_request: callback)
+
+      config.on_request.call(
+        request_id: "abc-123",
+        method: :get,
+        url: "https://api.sec-api.io/query",
+        headers: {"Content-Type" => "application/json"}
+      )
+
+      expect(received_args[:request_id]).to eq("abc-123")
+      expect(received_args[:method]).to eq(:get)
+      expect(received_args[:url]).to eq("https://api.sec-api.io/query")
+      expect(received_args[:headers]).to eq({"Content-Type" => "application/json"})
+    end
+  end
+
+  describe "on_response callback (Story 7.1)" do
+    it "accepts a callback proc" do
+      callback = ->(request_id:, status:, duration_ms:, url:, method:) { puts status }
+      config = SecApi::Config.new(api_key: "valid_test_key_123", on_response: callback)
+      expect(config.on_response).to eq(callback)
+    end
+
+    it "defaults to nil when not provided" do
+      config = SecApi::Config.new(api_key: "valid_test_key_123")
+      expect(config.on_response).to be_nil
+    end
+
+    it "can be invoked with response context hash" do
+      received_args = nil
+      callback = ->(request_id:, status:, duration_ms:, url:, method:) {
+        received_args = {request_id: request_id, status: status, duration_ms: duration_ms, url: url, method: method}
+      }
+      config = SecApi::Config.new(api_key: "valid_test_key_123", on_response: callback)
+
+      config.on_response.call(
+        request_id: "abc-123",
+        status: 200,
+        duration_ms: 150,
+        url: "https://api.sec-api.io/query",
+        method: :get
+      )
+
+      expect(received_args[:request_id]).to eq("abc-123")
+      expect(received_args[:status]).to eq(200)
+      expect(received_args[:duration_ms]).to eq(150)
+      expect(received_args[:url]).to eq("https://api.sec-api.io/query")
+      expect(received_args[:method]).to eq(:get)
+    end
+  end
+
+  describe "on_error callback (Story 7.1)" do
+    it "accepts a callback proc" do
+      callback = ->(request_id:, error:, url:, method:) { puts error.message }
+      config = SecApi::Config.new(api_key: "valid_test_key_123", on_error: callback)
+      expect(config.on_error).to eq(callback)
+    end
+
+    it "defaults to nil when not provided" do
+      config = SecApi::Config.new(api_key: "valid_test_key_123")
+      expect(config.on_error).to be_nil
+    end
+
+    it "can be invoked with error context hash" do
+      received_args = nil
+      callback = ->(request_id:, error:, url:, method:) {
+        received_args = {request_id: request_id, error: error, url: url, method: method}
+      }
+      config = SecApi::Config.new(api_key: "valid_test_key_123", on_error: callback)
+
+      test_error = StandardError.new("Test error")
+      config.on_error.call(
+        request_id: "abc-123",
+        error: test_error,
+        url: "https://api.sec-api.io/query",
+        method: :get
+      )
+
+      expect(received_args[:request_id]).to eq("abc-123")
+      expect(received_args[:error]).to eq(test_error)
+      expect(received_args[:url]).to eq("https://api.sec-api.io/query")
+      expect(received_args[:method]).to eq(:get)
+    end
+  end
 end

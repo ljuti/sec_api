@@ -244,6 +244,140 @@ module SecApi
   #     When a filing's delivery latency exceeds this threshold, a warning is logged.
   #     Set to 120 seconds (2 minutes) to align with NFR1 requirements.
   #
+  # @!attribute [rw] on_request
+  #   @return [Proc, nil] Optional callback invoked BEFORE each REST API request is sent.
+  #     Use for request logging, tracing, and custom instrumentation.
+  #     Receives a hash with the following keyword arguments:
+  #     - :request_id [String] - UUID for correlating this request across all callbacks
+  #     - :method [Symbol] - HTTP method (:get, :post, etc.)
+  #     - :url [String] - Full request URL
+  #     - :headers [Hash] - Request headers (Authorization header is sanitized/excluded)
+  #
+  #   @example Request logging integration
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       on_request: ->(request_id:, method:, url:, headers:) {
+  #         Rails.logger.info("SEC API Request", {
+  #           request_id: request_id,
+  #           method: method,
+  #           url: url
+  #         })
+  #       }
+  #     )
+  #
+  #   @example OpenTelemetry tracing integration
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       on_request: ->(request_id:, method:, url:, headers:) {
+  #         span = OpenTelemetry::Trace.current_span
+  #         span.set_attribute("sec_api.request_id", request_id)
+  #         span.set_attribute("http.method", method.to_s.upcase)
+  #         span.set_attribute("http.url", url)
+  #       }
+  #     )
+  #
+  # @!attribute [rw] on_response
+  #   @return [Proc, nil] Optional callback invoked AFTER each REST API response is received.
+  #     Use for response metrics, latency tracking, and observability dashboards.
+  #     Receives a hash with the following keyword arguments:
+  #     - :request_id [String] - UUID for correlating with the corresponding on_request callback
+  #     - :status [Integer] - HTTP status code (200, 429, 500, etc.)
+  #     - :duration_ms [Integer] - Request duration in milliseconds
+  #     - :url [String] - Request URL
+  #     - :method [Symbol] - HTTP method
+  #
+  #   @example StatsD/Datadog metrics integration
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       on_response: ->(request_id:, status:, duration_ms:, url:, method:) {
+  #         StatsD.histogram("sec_api.request.duration_ms", duration_ms)
+  #         StatsD.increment("sec_api.request.#{status >= 400 ? 'error' : 'success'}")
+  #       }
+  #     )
+  #
+  #   @example Prometheus metrics integration
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       on_response: ->(request_id:, status:, duration_ms:, url:, method:) {
+  #         SEC_API_REQUEST_DURATION.observe(duration_ms / 1000.0, labels: {method: method, status: status})
+  #         SEC_API_REQUESTS_TOTAL.increment(labels: {method: method, status: status})
+  #       }
+  #     )
+  #
+  # @!attribute [rw] on_retry
+  #   @return [Proc, nil] Optional callback invoked BEFORE each retry attempt for transient errors.
+  #     Use for retry monitoring and alerting on degraded API connectivity.
+  #     Receives a hash with the following keyword arguments:
+  #     - :request_id [String] - UUID for correlating with request/response callbacks
+  #     - :attempt [Integer] - Current retry attempt number (1-indexed)
+  #     - :max_attempts [Integer] - Maximum retry attempts configured
+  #     - :error_class [String] - Name of the exception class that triggered retry
+  #     - :error_message [String] - Exception message
+  #     - :will_retry_in [Float] - Seconds until retry (from exponential backoff)
+  #
+  #   @note This callback is distinct from on_error. on_retry fires BEFORE each retry
+  #     attempt, while on_error fires on FINAL failure (all retries exhausted).
+  #
+  #   @example Retry monitoring with StatsD
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       on_retry: ->(request_id:, attempt:, max_attempts:, error_class:, error_message:, will_retry_in:) {
+  #         StatsD.increment("sec_api.retry", tags: ["attempt:#{attempt}", "error:#{error_class}"])
+  #         logger.warn("SEC API retry", request_id: request_id, attempt: attempt, error: error_class)
+  #       }
+  #     )
+  #
+  #   @example Alert on repeated retries
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       on_retry: ->(request_id:, attempt:, max_attempts:, error_class:, error_message:, will_retry_in:) {
+  #         if attempt >= 3
+  #           AlertService.warn("SEC API degraded", {
+  #             request_id: request_id,
+  #             attempt: attempt,
+  #             max_attempts: max_attempts,
+  #             error: error_class
+  #           })
+  #         end
+  #       }
+  #     )
+  #
+  # @!attribute [rw] on_error
+  #   @return [Proc, nil] Optional callback invoked when a REST API request ultimately fails
+  #     (after all retry attempts are exhausted). Use for error tracking and alerting.
+  #     Receives a hash with the following keyword arguments:
+  #     - :request_id [String] - UUID for correlating with request/response callbacks
+  #     - :error [Exception] - The exception that caused the failure
+  #     - :url [String] - Request URL
+  #     - :method [Symbol] - HTTP method
+  #
+  #   @note This callback is distinct from on_retry. on_error fires on FINAL failure
+  #     (all retries exhausted), while on_retry fires BEFORE each retry attempt.
+  #
+  #   @example Bugsnag/Sentry error tracking
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       on_error: ->(request_id:, error:, url:, method:) {
+  #         Bugsnag.notify(error, {
+  #           request_id: request_id,
+  #           url: url,
+  #           method: method
+  #         })
+  #       }
+  #     )
+  #
+  #   @example Custom alerting integration
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       on_error: ->(request_id:, error:, url:, method:) {
+  #         AlertService.send_alert(
+  #           severity: error.is_a?(SecApi::PermanentError) ? :high : :medium,
+  #           message: "SEC API request failed: #{error.message}",
+  #           context: {request_id: request_id, url: url}
+  #         )
+  #       }
+  #     )
+  #
   class Config < Anyway::Config
     config_name :secapi
 
@@ -256,7 +390,10 @@ module SecApi
       :request_timeout,
       :rate_limit_threshold,
       :queue_wait_warning_threshold,
+      :on_request,
+      :on_response,
       :on_retry,
+      :on_error,
       :on_throttle,
       :on_rate_limit,
       :on_queue,

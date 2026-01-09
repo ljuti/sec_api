@@ -3,6 +3,8 @@ require "faraday/retry"
 
 module SecApi
   class Client
+    include CallbackHelper
+
     def initialize(config = Config.new)
       @_config = config
       @_config.validate!
@@ -181,6 +183,11 @@ module SecApi
         conn.request :json
         conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
 
+        # Instrumentation middleware - positioned FIRST to capture all requests/responses
+        # including retried requests. Generates request_id for correlation.
+        # Invokes on_request (before request) and on_response (after response) callbacks.
+        conn.use Middleware::Instrumentation, config: @_config
+
         # Retry middleware - positioned BEFORE ErrorHandler to catch HTTP status codes
         # Retries on [429, 500, 502, 503, 504] and Faraday exceptions
         conn.request :retry, retry_options
@@ -203,7 +210,8 @@ module SecApi
 
         # Error handler middleware - converts HTTP errors to typed exceptions
         # Positioned AFTER retry so non-retryable errors (401, 404, etc.) fail immediately
-        conn.use Middleware::ErrorHandler
+        # Invokes on_error callback when raising errors (Story 7.1)
+        conn.use Middleware::ErrorHandler, config: @_config
 
         # Connection pool configuration (NFR14: minimum 10 concurrent requests)
         # Note: Net::HTTP adapter uses persistent connections but doesn't expose pool_size config
@@ -248,10 +256,14 @@ module SecApi
           # Invoke on_rate_limit callback for 429 responses
           invoke_on_rate_limit_callback(exception, retry_count, env)
 
-          # Basic logging - users can configure @_config.on_retry callback for custom instrumentation
-          if @_config.respond_to?(:on_retry) && @_config.on_retry
-            @_config.on_retry.call(env, exception, retry_count)
-          end
+          # Invoke on_retry callback for retry instrumentation (Story 7.1)
+          invoke_on_retry_callback(
+            env: env,
+            retry_count: retry_count,
+            max_attempts: options[:max],
+            exception: exception,
+            will_retry_in: will_retry_in
+          )
         }
       }
     end
@@ -322,5 +334,31 @@ module SecApi
         # Don't let logging errors break the request
       end
     end
+
+    # Invokes the on_retry callback for retry instrumentation.
+    #
+    # @param env [Hash] Faraday request environment
+    # @param retry_count [Integer] Zero-indexed retry count from faraday-retry
+    # @param max_attempts [Integer] Maximum retry attempts configured
+    # @param exception [Exception] The exception that triggered the retry
+    # @param will_retry_in [Float] Seconds until retry
+    # @return [void]
+    # @api private
+    def invoke_on_retry_callback(env:, retry_count:, max_attempts:, exception:, will_retry_in:)
+      return unless @_config.on_retry
+
+      @_config.on_retry.call(
+        request_id: env[:request_id],
+        attempt: retry_count + 1, # Convert 0-indexed to 1-indexed for user convenience
+        max_attempts: max_attempts,
+        error_class: exception.class.name,
+        error_message: exception.message,
+        will_retry_in: will_retry_in
+      )
+    rescue => e
+      log_callback_error("on_retry", e)
+    end
+
+    # log_callback_error is provided by CallbackHelper module
   end
 end

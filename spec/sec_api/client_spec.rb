@@ -995,4 +995,406 @@ RSpec.describe SecApi::Client do
       end
     end
   end
+
+  describe "instrumentation callbacks (Story 7.1)" do
+    let(:stubs) { Faraday::Adapter::Test::Stubs.new }
+
+    after { stubs.verify_stubbed_calls }
+
+    describe "on_request callback" do
+      it "invokes callback before request is sent" do
+        received_params = nil
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          on_request: ->(request_id:, method:, url:, headers:) {
+            received_params = {request_id: request_id, method: method, url: url, headers: headers}
+          }
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        expect(received_params).not_to be_nil
+        expect(received_params[:method]).to eq(:get)
+        expect(received_params[:request_id]).to match(/\A[0-9a-f-]{36}\z/)
+      end
+
+      it "sanitizes Authorization header from callback" do
+        received_headers = nil
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          on_request: ->(headers:, **) { received_headers = headers }
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.headers["Authorization"] = "secret_key"
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        expect(received_headers).not_to have_key("Authorization")
+      end
+    end
+
+    describe "on_response callback" do
+      it "invokes callback with status and duration_ms" do
+        received_params = nil
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          on_response: ->(request_id:, status:, duration_ms:, url:, method:) {
+            received_params = {request_id: request_id, status: status, duration_ms: duration_ms}
+          }
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        expect(received_params[:status]).to eq(200)
+        expect(received_params[:duration_ms]).to be_a(Integer)
+        expect(received_params[:duration_ms]).to be >= 0
+      end
+    end
+
+    describe "on_retry callback" do
+      it "invokes callback before each retry attempt" do
+        retry_calls = []
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          retry_max_attempts: 3,
+          retry_initial_delay: 0.01,
+          on_retry: ->(request_id:, attempt:, max_attempts:, error_class:, error_message:, will_retry_in:) {
+            retry_calls << {attempt: attempt, max_attempts: max_attempts, error_class: error_class}
+          }
+        )
+        client = SecApi::Client.new(config)
+
+        # First 2 fail with 503, 3rd succeeds
+        2.times { stubs.get("/test") { [503, {}, "Service unavailable"] } }
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        expect(retry_calls.size).to eq(2)
+        expect(retry_calls[0][:attempt]).to eq(1)
+        expect(retry_calls[1][:attempt]).to eq(2)
+        expect(retry_calls[0][:max_attempts]).to eq(3)
+        expect(retry_calls[0][:error_class]).to include("ServerError")
+      end
+
+      it "includes request_id in retry callback" do
+        request_ids = []
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          retry_max_attempts: 2,
+          retry_initial_delay: 0.01,
+          on_request: ->(request_id:, **) { request_ids << request_id },
+          on_retry: ->(request_id:, **) { request_ids << request_id }
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [503, {}, "Service unavailable"] }
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        # All request_ids should be the same
+        expect(request_ids.uniq.size).to eq(1)
+      end
+    end
+
+    describe "on_error callback" do
+      it "invokes callback on final failure" do
+        received_error = nil
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          retry_max_attempts: 1,
+          on_error: ->(request_id:, error:, url:, method:) {
+            received_error = {error: error, url: url, method: method}
+          }
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [404, {}, "Not found"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.use SecApi::Middleware::ErrorHandler, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        expect { client.connection.get("/test") }.to raise_error(SecApi::NotFoundError)
+        expect(received_error[:error]).to be_a(SecApi::NotFoundError)
+        expect(received_error[:method]).to eq(:get)
+      end
+
+      it "invokes on_error for both HTTP errors and network errors" do
+        error_types = []
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          on_error: ->(error:, **) { error_types << error.class.name }
+        )
+        client = SecApi::Client.new(config)
+
+        # Test HTTP error (404)
+        stubs.get("/test404") { [404, {}, "Not found"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.use SecApi::Middleware::ErrorHandler, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        expect { client.connection.get("/test404") }.to raise_error(SecApi::NotFoundError)
+        expect(error_types).to include("SecApi::NotFoundError")
+      end
+
+      it "does NOT invoke on_error when request eventually succeeds after retries" do
+        error_calls = []
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          retry_max_attempts: 3,
+          retry_initial_delay: 0.01,
+          on_error: ->(error:, **) { error_calls << error.class.name }
+        )
+        client = SecApi::Client.new(config)
+
+        # First 2 fail with 503, 3rd succeeds
+        2.times { stubs.get("/test") { [503, {}, "Service unavailable"] } }
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        response = client.connection.get("/test")
+
+        expect(response.status).to eq(200)
+        expect(error_calls).to be_empty
+      end
+
+      it "invokes on_error only once after all retries exhausted for network errors" do
+        error_calls = []
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          retry_max_attempts: 2,
+          retry_initial_delay: 0.01,
+          on_error: ->(error:, **) { error_calls << error.class.name }
+        )
+        client = SecApi::Client.new(config)
+
+        # Create a connection that raises TimeoutError
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler, config: config
+            builder.adapter :test do |stub|
+              stub.get("/test") { raise Faraday::TimeoutError, "timeout" }
+            end
+          end
+        )
+
+        expect { client.connection.get("/test") }.to raise_error(SecApi::NetworkError)
+        # on_error should be called exactly once, not on each retry attempt
+        expect(error_calls.size).to eq(1)
+        expect(error_calls.first).to eq("SecApi::NetworkError")
+      end
+    end
+
+    describe "callback exception safety" do
+      it "continues request when on_request callback raises" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          on_request: ->(**) { raise "Callback error" }
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [200, {}, '{"success": true}'] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        response = client.connection.get("/test")
+        expect(response.status).to eq(200)
+      end
+
+      it "continues error handling when on_error callback raises" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          on_error: ->(**) { raise "Callback error" }
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [404, {}, "Not found"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::ErrorHandler, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        # Should still raise the original error, not the callback error
+        expect { client.connection.get("/test") }.to raise_error(SecApi::NotFoundError)
+      end
+
+      it "logs callback errors when logger is configured" do
+        log_output = StringIO.new
+        logger = Logger.new(log_output)
+
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          logger: logger,
+          on_request: ->(**) { raise "Test callback error" }
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        log_output.rewind
+        logged_content = log_output.read
+
+        expect(logged_content).to include("secapi.callback_error")
+        expect(logged_content).to include("on_request")
+      end
+
+      it "continues request when on_response callback raises" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          on_response: ->(**) { raise "Callback error" }
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [200, {}, '{"success": true}'] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        response = client.connection.get("/test")
+        expect(response.status).to eq(200)
+      end
+
+      it "continues retry when on_retry callback raises" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          retry_max_attempts: 2,
+          retry_initial_delay: 0.01,
+          on_retry: ->(**) { raise "Callback error" }
+        )
+        client = SecApi::Client.new(config)
+
+        # First fails with 503, second succeeds
+        stubs.get("/test") { [503, {}, "Service unavailable"] }
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        response = client.connection.get("/test")
+        expect(response.status).to eq(200)
+      end
+    end
+
+    describe "request_id consistency" do
+      it "uses same request_id across all callbacks for same request" do
+        request_ids = []
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          on_request: ->(request_id:, **) { request_ids << request_id },
+          on_response: ->(request_id:, **) { request_ids << request_id }
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        expect(request_ids.size).to eq(2)
+        expect(request_ids.uniq.size).to eq(1)
+        expect(request_ids.first).to match(/\A[0-9a-f-]{36}\z/)
+      end
+    end
+  end
 end
