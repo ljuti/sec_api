@@ -10,6 +10,7 @@ require "sec_api/deep_freezable"
 require "sec_api/callback_helper"
 require "sec_api/structured_logger"
 require "sec_api/metrics_collector"
+require "sec_api/filing_journey"
 
 require "sec_api/errors/error"
 require "sec_api/errors/configuration_error"

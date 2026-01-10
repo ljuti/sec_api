@@ -91,6 +91,10 @@ module SecApi
     STREAM_LATENCY = "sec_api.stream.latency_ms"
     STREAM_RECONNECTS = "sec_api.stream.reconnects"
 
+    # Standard metric names for filing journey tracking
+    JOURNEY_STAGE_DURATION = "sec_api.filing.journey.stage_ms"
+    JOURNEY_TOTAL_DURATION = "sec_api.filing.journey.total_ms"
+
     # Records a successful or failed response.
     #
     # Increments request counters and records duration histogram.
@@ -215,6 +219,67 @@ module SecApi
       increment(backend, STREAM_RECONNECTS)
       gauge(backend, "sec_api.stream.reconnect_attempts", attempt_count)
       histogram(backend, "sec_api.stream.downtime_ms", (downtime_seconds * 1000).round)
+    end
+
+    # Records a filing journey stage completion.
+    #
+    # Use this to track duration of individual pipeline stages (detected,
+    # queried, extracted, processed). Combined with FilingJourney logging,
+    # this provides both detailed logs and aggregated metrics.
+    #
+    # @param backend [Object] Metrics backend
+    # @param stage [String] Journey stage (detected, queried, extracted, processed)
+    # @param duration_ms [Integer] Stage duration in milliseconds
+    # @param form_type [String, nil] Filing form type (10-K, 8-K, etc.)
+    # @return [void]
+    #
+    # @example Record a query stage
+    #   MetricsCollector.record_journey_stage(statsd,
+    #     stage: "queried",
+    #     duration_ms: 150,
+    #     form_type: "10-K"
+    #   )
+    #
+    # @see FilingJourney
+    #
+    def record_journey_stage(backend, stage:, duration_ms:, form_type: nil)
+      tags = {stage: stage}
+      tags[:form_type] = form_type if form_type
+      histogram(backend, JOURNEY_STAGE_DURATION, duration_ms, tags: tags)
+    end
+
+    # Records total filing journey duration.
+    #
+    # Use this to track end-to-end pipeline latency from filing detection
+    # through processing completion. Useful for monitoring SLAs and
+    # identifying slow pipelines.
+    #
+    # @param backend [Object] Metrics backend
+    # @param total_ms [Integer] Total pipeline duration in milliseconds
+    # @param form_type [String, nil] Filing form type (10-K, 8-K, etc.)
+    # @param success [Boolean] Whether processing succeeded (default: true)
+    # @return [void]
+    #
+    # @example Record successful pipeline
+    #   MetricsCollector.record_journey_total(statsd,
+    #     total_ms: 5000,
+    #     form_type: "10-K",
+    #     success: true
+    #   )
+    #
+    # @example Record failed pipeline
+    #   MetricsCollector.record_journey_total(statsd,
+    #     total_ms: 500,
+    #     form_type: "10-K",
+    #     success: false
+    #   )
+    #
+    # @see FilingJourney
+    #
+    def record_journey_total(backend, total_ms:, form_type: nil, success: true)
+      tags = {success: success.to_s}
+      tags[:form_type] = form_type if form_type
+      histogram(backend, JOURNEY_TOTAL_DURATION, total_ms, tags: tags)
     end
 
     private

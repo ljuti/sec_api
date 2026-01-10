@@ -36,6 +36,11 @@ RSpec.describe SecApi::MetricsCollector do
       expect(described_class::STREAM_LATENCY).to eq("sec_api.stream.latency_ms")
       expect(described_class::STREAM_RECONNECTS).to eq("sec_api.stream.reconnects")
     end
+
+    it "defines standard journey metrics" do
+      expect(described_class::JOURNEY_STAGE_DURATION).to eq("sec_api.filing.journey.stage_ms")
+      expect(described_class::JOURNEY_TOTAL_DURATION).to eq("sec_api.filing.journey.total_ms")
+    end
   end
 
   describe ".record_response" do
@@ -209,6 +214,64 @@ RSpec.describe SecApi::MetricsCollector do
     context "with nil backend" do
       it "does not raise an error" do
         expect { described_class.record_reconnect(nil, attempt_count: 3, downtime_seconds: 15.5) }.not_to raise_error
+      end
+    end
+  end
+
+  describe ".record_journey_stage" do
+    it "records stage duration histogram with stage tag" do
+      expect(backend).to receive(:histogram).with("sec_api.filing.journey.stage_ms", 150, tags: ["stage:queried"])
+
+      described_class.record_journey_stage(backend, stage: "queried", duration_ms: 150)
+    end
+
+    it "includes form_type tag when provided" do
+      expect(backend).to receive(:histogram).with("sec_api.filing.journey.stage_ms", 200, tags: ["stage:extracted", "form_type:10-K"])
+
+      described_class.record_journey_stage(backend, stage: "extracted", duration_ms: 200, form_type: "10-K")
+    end
+
+    it "excludes form_type tag when nil" do
+      expect(backend).to receive(:histogram).with("sec_api.filing.journey.stage_ms", 100, tags: ["stage:detected"])
+
+      described_class.record_journey_stage(backend, stage: "detected", duration_ms: 100, form_type: nil)
+    end
+
+    context "with nil backend" do
+      it "does not raise an error" do
+        expect { described_class.record_journey_stage(nil, stage: "queried", duration_ms: 150) }.not_to raise_error
+      end
+    end
+  end
+
+  describe ".record_journey_total" do
+    it "records total duration histogram with success tag" do
+      expect(backend).to receive(:histogram).with("sec_api.filing.journey.total_ms", 5000, tags: ["success:true"])
+
+      described_class.record_journey_total(backend, total_ms: 5000)
+    end
+
+    it "includes form_type tag when provided" do
+      expect(backend).to receive(:histogram).with("sec_api.filing.journey.total_ms", 3000, tags: ["success:true", "form_type:10-K"])
+
+      described_class.record_journey_total(backend, total_ms: 3000, form_type: "10-K")
+    end
+
+    it "records failure with success:false tag" do
+      expect(backend).to receive(:histogram).with("sec_api.filing.journey.total_ms", 500, tags: ["success:false"])
+
+      described_class.record_journey_total(backend, total_ms: 500, success: false)
+    end
+
+    it "includes both form_type and success tags on failure" do
+      expect(backend).to receive(:histogram).with("sec_api.filing.journey.total_ms", 750, tags: ["success:false", "form_type:8-K"])
+
+      described_class.record_journey_total(backend, total_ms: 750, form_type: "8-K", success: false)
+    end
+
+    context "with nil backend" do
+      it "does not raise an error" do
+        expect { described_class.record_journey_total(nil, total_ms: 5000) }.not_to raise_error
       end
     end
   end
