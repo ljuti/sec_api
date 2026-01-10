@@ -8,6 +8,7 @@ module SecApi
     def initialize(config = Config.new)
       @_config = config
       @_config.validate!
+      setup_default_logging if @_config.default_logging && @_config.logger
       @_rate_limit_tracker = RateLimitTracker.new
     end
 
@@ -360,5 +361,40 @@ module SecApi
     end
 
     # log_callback_error is provided by CallbackHelper module
+
+    # Sets up default structured logging callbacks when default_logging is enabled.
+    #
+    # Uses {SecApi::StructuredLogger} to generate JSON-formatted log events
+    # for request lifecycle events. Explicit callbacks configured by the user
+    # take precedence and will not be overridden.
+    #
+    # @return [void]
+    # @api private
+    def setup_default_logging
+      logger = @_config.logger
+      level = @_config.log_level || :info
+
+      # Only set callbacks that aren't already configured
+      @_config.on_request ||= ->(request_id:, method:, url:, **) {
+        StructuredLogger.log_request(logger, level,
+          request_id: request_id, method: method, url: url)
+      }
+
+      @_config.on_response ||= ->(request_id:, status:, duration_ms:, url:, method:) {
+        StructuredLogger.log_response(logger, level,
+          request_id: request_id, status: status, duration_ms: duration_ms, url: url, method: method)
+      }
+
+      @_config.on_retry ||= ->(request_id:, attempt:, max_attempts:, error_class:, error_message:, will_retry_in:) {
+        StructuredLogger.log_retry(logger, :warn, # Always warn on retry
+          request_id: request_id, attempt: attempt, max_attempts: max_attempts,
+          error_class: error_class, error_message: error_message, will_retry_in: will_retry_in)
+      }
+
+      @_config.on_error ||= ->(request_id:, error:, url:, method:) {
+        StructuredLogger.log_error(logger, :error, # Always error on failure
+          request_id: request_id, error: error, url: url, method: method)
+      }
+    end
   end
 end

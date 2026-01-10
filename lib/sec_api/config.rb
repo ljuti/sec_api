@@ -378,6 +378,31 @@ module SecApi
   #       }
   #     )
   #
+  # @!attribute [rw] default_logging
+  #   @return [Boolean] When true and logger is configured, automatically sets up
+  #     structured logging callbacks for all request lifecycle events using
+  #     {SecApi::StructuredLogger}. Default: false.
+  #     Explicit callback configurations take precedence over default logging.
+  #
+  #   @example Enable default structured logging
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       logger: Rails.logger,
+  #       default_logging: true
+  #     )
+  #     # Logs: secapi.request.start, secapi.request.complete, secapi.request.retry, secapi.request.error
+  #
+  #   @example Override specific callbacks while using default logging
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       logger: Rails.logger,
+  #       default_logging: true,
+  #       on_error: ->(request_id:, error:, url:, method:) {
+  #         # Custom error handling takes precedence over default logging
+  #         Bugsnag.notify(error)
+  #       }
+  #     )
+  #
   class Config < Anyway::Config
     config_name :secapi
 
@@ -408,7 +433,8 @@ module SecApi
       :stream_initial_reconnect_delay,
       :stream_max_reconnect_delay,
       :stream_backoff_multiplier,
-      :stream_latency_warning_threshold
+      :stream_latency_warning_threshold,
+      :default_logging
 
     # Sensible defaults
     def initialize(*)
@@ -429,6 +455,8 @@ module SecApi
       self.stream_backoff_multiplier ||= 2
       # Stream latency defaults (Story 6.5)
       self.stream_latency_warning_threshold ||= 120.0
+      # Structured logging defaults (Story 7.3)
+      self.default_logging = false if default_logging.nil?
     end
 
     # Validation called by Client

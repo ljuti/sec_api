@@ -1397,4 +1397,378 @@ RSpec.describe SecApi::Client do
       end
     end
   end
+
+  describe "default_logging (Story 7.3)" do
+    let(:stubs) { Faraday::Adapter::Test::Stubs.new }
+    let(:log_output) { StringIO.new }
+    let(:logger) do
+      l = Logger.new(log_output)
+      l.formatter = ->(_, _, _, msg) { "#{msg}\n" }
+      l
+    end
+
+    after { stubs.verify_stubbed_calls }
+
+    describe "when default_logging is false" do
+      it "does not auto-configure logging callbacks" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          logger: logger,
+          default_logging: false
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        log_output.rewind
+        expect(log_output.read).to be_empty
+      end
+    end
+
+    describe "when default_logging is true with logger" do
+      it "auto-configures on_request callback for structured logging" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          logger: logger,
+          default_logging: true
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        log_output.rewind
+        log_lines = log_output.read.strip.split("\n")
+        request_log = JSON.parse(log_lines.find { |l| l.include?("secapi.request.start") })
+
+        expect(request_log["event"]).to eq("secapi.request.start")
+        expect(request_log).to have_key("request_id")
+        expect(request_log).to have_key("method")
+        expect(request_log).to have_key("timestamp")
+      end
+
+      it "auto-configures on_response callback for structured logging" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          logger: logger,
+          default_logging: true
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        log_output.rewind
+        log_lines = log_output.read.strip.split("\n")
+        response_log = JSON.parse(log_lines.find { |l| l.include?("secapi.request.complete") })
+
+        expect(response_log["event"]).to eq("secapi.request.complete")
+        expect(response_log["status"]).to eq(200)
+        expect(response_log).to have_key("duration_ms")
+        expect(response_log).to have_key("success")
+      end
+
+      it "auto-configures on_error callback for structured logging" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          logger: logger,
+          default_logging: true
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [404, {}, "Not found"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.use SecApi::Middleware::ErrorHandler, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        expect { client.connection.get("/test") }.to raise_error(SecApi::NotFoundError)
+
+        log_output.rewind
+        log_lines = log_output.read.strip.split("\n")
+        error_log = JSON.parse(log_lines.find { |l| l.include?("secapi.request.error") })
+
+        expect(error_log["event"]).to eq("secapi.request.error")
+        expect(error_log["error_class"]).to eq("SecApi::NotFoundError")
+        expect(error_log).to have_key("error_message")
+      end
+
+      it "auto-configures on_retry callback for structured logging" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          logger: logger,
+          default_logging: true,
+          retry_max_attempts: 2,
+          retry_initial_delay: 0.01
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [503, {}, "Service unavailable"] }
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        log_output.rewind
+        log_lines = log_output.read.strip.split("\n")
+        retry_log = JSON.parse(log_lines.find { |l| l.include?("secapi.request.retry") })
+
+        expect(retry_log["event"]).to eq("secapi.request.retry")
+        expect(retry_log["attempt"]).to eq(1)
+        expect(retry_log["max_attempts"]).to eq(2)
+        expect(retry_log).to have_key("error_class")
+      end
+    end
+
+    describe "explicit callbacks take precedence over default logging" do
+      it "uses explicit on_request callback instead of default" do
+        custom_calls = []
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          logger: logger,
+          default_logging: true,
+          on_request: ->(request_id:, **) { custom_calls << request_id }
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        # Custom callback was invoked
+        expect(custom_calls.size).to eq(1)
+
+        # Default logging should NOT have logged request start
+        log_output.rewind
+        log_lines = log_output.read.strip.split("\n")
+        request_log = log_lines.find { |l| l.include?("secapi.request.start") }
+        expect(request_log).to be_nil
+      end
+
+      it "uses explicit on_response callback instead of default" do
+        custom_calls = []
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          logger: logger,
+          default_logging: true,
+          on_response: ->(status:, **) { custom_calls << status }
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        # Custom callback was invoked
+        expect(custom_calls).to eq([200])
+
+        # Default logging should NOT have logged response
+        log_output.rewind
+        log_lines = log_output.read.strip.split("\n")
+        response_log = log_lines.find { |l| l.include?("secapi.request.complete") }
+        expect(response_log).to be_nil
+      end
+
+      it "uses explicit on_error callback instead of default" do
+        custom_errors = []
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          logger: logger,
+          default_logging: true,
+          on_error: ->(error:, **) { custom_errors << error.class.name }
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [404, {}, "Not found"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.use SecApi::Middleware::ErrorHandler, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        expect { client.connection.get("/test") }.to raise_error(SecApi::NotFoundError)
+
+        # Custom callback was invoked
+        expect(custom_errors).to eq(["SecApi::NotFoundError"])
+
+        # Default logging should NOT have logged error
+        log_output.rewind
+        log_lines = log_output.read.strip.split("\n")
+        error_log = log_lines.find { |l| l.include?("secapi.request.error") }
+        expect(error_log).to be_nil
+      end
+    end
+
+    describe "when default_logging is true but no logger" do
+      it "does not crash or configure callbacks" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          logger: nil,
+          default_logging: true
+        )
+        SecApi::Client.new(config) # Initialize to trigger setup_default_logging
+
+        expect(config.on_request).to be_nil
+        expect(config.on_response).to be_nil
+        expect(config.on_error).to be_nil
+        expect(config.on_retry).to be_nil
+      end
+    end
+
+    describe "log levels" do
+      it "uses configured log_level for request/response logging" do
+        # Create a logger that tracks which methods were called
+        debug_output = StringIO.new
+        debug_logger = Logger.new(debug_output)
+        debug_logger.formatter = ->(severity, _, _, msg) { "#{severity}:#{msg}\n" }
+
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          logger: debug_logger,
+          log_level: :debug,
+          default_logging: true
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        # Check that debug-level messages were logged
+        debug_output.rewind
+        log_content = debug_output.read
+        expect(log_content).to include("DEBUG:")
+        expect(log_content).to include("secapi.request")
+      end
+
+      it "uses :warn for retry events regardless of log_level" do
+        warn_output = StringIO.new
+        warn_logger = Logger.new(warn_output)
+        warn_logger.formatter = ->(severity, _, _, msg) { "#{severity}:#{msg}\n" }
+
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          logger: warn_logger,
+          log_level: :debug,
+          default_logging: true,
+          retry_max_attempts: 2,
+          retry_initial_delay: 0.01
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [503, {}, "Service unavailable"] }
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.request :retry, client.send(:retry_options)
+            builder.use SecApi::Middleware::ErrorHandler, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        # Check that warn-level message was logged for retry
+        warn_output.rewind
+        log_content = warn_output.read
+        expect(log_content).to include("WARN:")
+        expect(log_content).to include("secapi.request.retry")
+      end
+
+      it "uses :error for error events regardless of log_level" do
+        error_output = StringIO.new
+        error_logger = Logger.new(error_output)
+        error_logger.formatter = ->(severity, _, _, msg) { "#{severity}:#{msg}\n" }
+
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          logger: error_logger,
+          log_level: :debug,
+          default_logging: true
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [404, {}, "Not found"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.use SecApi::Middleware::ErrorHandler, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        expect { client.connection.get("/test") }.to raise_error(SecApi::NotFoundError)
+
+        # Check that error-level message was logged
+        error_output.rewind
+        log_content = error_output.read
+        expect(log_content).to include("ERROR:")
+        expect(log_content).to include("secapi.request.error")
+      end
+    end
+  end
 end

@@ -609,4 +609,27 @@ RSpec.describe SecApi::Config do
       expect(received_args[:method]).to eq(:get)
     end
   end
+
+  describe "default_logging configuration (Story 7.3)" do
+    it "defaults to false when not provided" do
+      config = SecApi::Config.new(api_key: "valid_test_key_123")
+      expect(config.default_logging).to eq(false)
+    end
+
+    it "accepts true to enable default structured logging" do
+      config = SecApi::Config.new(api_key: "valid_test_key_123", default_logging: true)
+      expect(config.default_logging).to eq(true)
+    end
+
+    it "accepts false to disable default structured logging" do
+      config = SecApi::Config.new(api_key: "valid_test_key_123", default_logging: false)
+      expect(config.default_logging).to eq(false)
+    end
+
+    it "loads from SECAPI_DEFAULT_LOGGING environment variable" do
+      ENV["SECAPI_DEFAULT_LOGGING"] = "true"
+      config = SecApi::Config.new(api_key: "valid_test_key_123")
+      expect(config.default_logging).to eq(true)
+    end
+  end
 end
