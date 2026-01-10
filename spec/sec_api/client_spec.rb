@@ -1771,4 +1771,359 @@ RSpec.describe SecApi::Client do
       end
     end
   end
+
+  describe "default_metrics (Story 7.4)" do
+    let(:stubs) { Faraday::Adapter::Test::Stubs.new }
+
+    after { stubs.verify_stubbed_calls }
+
+    # Helper to create a metrics backend spy
+    def create_metrics_backend_spy
+      Struct.new(:calls) do
+        def initialize
+          super([])
+        end
+
+        def increment(metric, tags: nil)
+          calls << {type: :increment, metric: metric, tags: tags}
+        end
+
+        def histogram(metric, value, tags: nil)
+          calls << {type: :histogram, metric: metric, value: value, tags: tags}
+        end
+
+        def gauge(metric, value, tags: nil)
+          calls << {type: :gauge, metric: metric, value: value, tags: tags}
+        end
+
+        def method(_name)
+          OpenStruct.new(arity: -1)
+        end
+      end.new
+    end
+
+    describe "when metrics_backend is nil" do
+      it "does not auto-configure metrics callbacks" do
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          metrics_backend: nil
+        )
+        SecApi::Client.new(config)
+
+        expect(config.on_response).to be_nil
+        expect(config.on_retry).to be_nil
+        expect(config.on_error).to be_nil
+        expect(config.on_rate_limit).to be_nil
+        expect(config.on_throttle).to be_nil
+        expect(config.on_filing).to be_nil
+        expect(config.on_reconnect).to be_nil
+      end
+    end
+
+    describe "when metrics_backend is configured" do
+      it "auto-configures on_response callback" do
+        backend = create_metrics_backend_spy
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          metrics_backend: backend
+        )
+        SecApi::Client.new(config)
+
+        expect(config.on_response).not_to be_nil
+      end
+
+      it "records request metrics on successful response" do
+        backend = create_metrics_backend_spy
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          metrics_backend: backend
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        # Verify metrics were recorded
+        increment_calls = backend.calls.select { |c| c[:type] == :increment }
+        histogram_calls = backend.calls.select { |c| c[:type] == :histogram }
+
+        expect(increment_calls.map { |c| c[:metric] }).to include("sec_api.requests.total")
+        expect(increment_calls.map { |c| c[:metric] }).to include("sec_api.requests.success")
+        expect(histogram_calls.map { |c| c[:metric] }).to include("sec_api.requests.duration_ms")
+      end
+
+      it "auto-configures on_retry callback" do
+        backend = create_metrics_backend_spy
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          metrics_backend: backend
+        )
+        SecApi::Client.new(config)
+
+        expect(config.on_retry).not_to be_nil
+      end
+
+      it "auto-configures on_error callback" do
+        backend = create_metrics_backend_spy
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          metrics_backend: backend
+        )
+        SecApi::Client.new(config)
+
+        expect(config.on_error).not_to be_nil
+      end
+
+      it "records error metrics on final failure" do
+        backend = create_metrics_backend_spy
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          metrics_backend: backend
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [404, {}, "Not found"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.use SecApi::Middleware::ErrorHandler, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        expect { client.connection.get("/test") }.to raise_error(SecApi::NotFoundError)
+
+        # Verify error metric was recorded
+        increment_calls = backend.calls.select { |c| c[:type] == :increment }
+        expect(increment_calls.map { |c| c[:metric] }).to include("sec_api.retries.exhausted")
+      end
+
+      it "auto-configures on_rate_limit callback" do
+        backend = create_metrics_backend_spy
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          metrics_backend: backend
+        )
+        SecApi::Client.new(config)
+
+        expect(config.on_rate_limit).not_to be_nil
+      end
+
+      it "auto-configures on_throttle callback" do
+        backend = create_metrics_backend_spy
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          metrics_backend: backend
+        )
+        SecApi::Client.new(config)
+
+        expect(config.on_throttle).not_to be_nil
+      end
+
+      it "auto-configures on_filing callback for streaming" do
+        backend = create_metrics_backend_spy
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          metrics_backend: backend
+        )
+        SecApi::Client.new(config)
+
+        expect(config.on_filing).not_to be_nil
+      end
+
+      it "auto-configures on_reconnect callback for streaming" do
+        backend = create_metrics_backend_spy
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          metrics_backend: backend
+        )
+        SecApi::Client.new(config)
+
+        expect(config.on_reconnect).not_to be_nil
+      end
+
+      it "records filing metrics via on_filing callback" do
+        backend = create_metrics_backend_spy
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          metrics_backend: backend
+        )
+        SecApi::Client.new(config)
+
+        # Create a mock filing with form_type
+        filing = double("StreamFiling", form_type: "10-K")
+
+        # Invoke the callback directly
+        config.on_filing.call(filing: filing, latency_ms: 500, received_at: Time.now)
+
+        # Verify filing metrics were recorded
+        increment_calls = backend.calls.select { |c| c[:type] == :increment }
+        histogram_calls = backend.calls.select { |c| c[:type] == :histogram }
+
+        expect(increment_calls.map { |c| c[:metric] }).to include("sec_api.stream.filings")
+        expect(histogram_calls.map { |c| c[:metric] }).to include("sec_api.stream.latency_ms")
+      end
+
+      it "records reconnect metrics via on_reconnect callback" do
+        backend = create_metrics_backend_spy
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          metrics_backend: backend
+        )
+        SecApi::Client.new(config)
+
+        # Invoke the callback directly
+        config.on_reconnect.call(attempt_count: 3, downtime_seconds: 15.5)
+
+        # Verify reconnect metrics were recorded
+        increment_calls = backend.calls.select { |c| c[:type] == :increment }
+        gauge_calls = backend.calls.select { |c| c[:type] == :gauge }
+        histogram_calls = backend.calls.select { |c| c[:type] == :histogram }
+
+        expect(increment_calls.map { |c| c[:metric] }).to include("sec_api.stream.reconnects")
+        expect(gauge_calls.map { |c| c[:metric] }).to include("sec_api.stream.reconnect_attempts")
+        expect(histogram_calls.map { |c| c[:metric] }).to include("sec_api.stream.downtime_ms")
+      end
+
+      it "records throttle metrics when throttling occurs" do
+        backend = create_metrics_backend_spy
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          metrics_backend: backend,
+          rate_limit_threshold: 0.5
+        )
+        client = SecApi::Client.new(config)
+        tracker = client.instance_variable_get(:@_rate_limit_tracker)
+
+        # Set up rate limit state to trigger throttling
+        tracker.update(limit: 100, remaining: 40, reset_at: Time.now + 10)
+
+        stubs.get("/test") { [200, {"X-RateLimit-Remaining" => "39"}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.use SecApi::Middleware::RateLimiter,
+              state_store: tracker,
+              threshold: config.rate_limit_threshold,
+              on_throttle: config.on_throttle
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        # Verify throttle metrics were recorded
+        increment_calls = backend.calls.select { |c| c[:type] == :increment }
+        expect(increment_calls.map { |c| c[:metric] }).to include("sec_api.rate_limit.throttle")
+      end
+    end
+
+    describe "explicit callbacks take precedence over default metrics" do
+      it "uses explicit on_response callback instead of default metrics" do
+        backend = create_metrics_backend_spy
+        custom_calls = []
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          metrics_backend: backend,
+          on_response: ->(status:, **) { custom_calls << status }
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        # Custom callback was invoked
+        expect(custom_calls).to eq([200])
+
+        # Metrics backend should NOT have received request metrics (custom callback took precedence)
+        increment_calls = backend.calls.select { |c| c[:type] == :increment }
+        expect(increment_calls.map { |c| c[:metric] }).not_to include("sec_api.requests.total")
+      end
+
+      it "uses explicit on_error callback instead of default metrics" do
+        backend = create_metrics_backend_spy
+        custom_errors = []
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          metrics_backend: backend,
+          on_error: ->(error:, **) { custom_errors << error.class.name }
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [404, {}, "Not found"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.use SecApi::Middleware::ErrorHandler, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        expect { client.connection.get("/test") }.to raise_error(SecApi::NotFoundError)
+
+        # Custom callback was invoked
+        expect(custom_errors).to eq(["SecApi::NotFoundError"])
+
+        # Metrics backend should NOT have received error metrics (custom callback took precedence)
+        increment_calls = backend.calls.select { |c| c[:type] == :increment }
+        expect(increment_calls.map { |c| c[:metric] }).not_to include("sec_api.retries.exhausted")
+      end
+    end
+
+    describe "combined with default_logging" do
+      it "logging takes precedence when both configured (logging is set up first)" do
+        backend = create_metrics_backend_spy
+        log_output = StringIO.new
+        logger = Logger.new(log_output)
+        logger.formatter = ->(_, _, _, msg) { "#{msg}\n" }
+
+        config = SecApi::Config.new(
+          api_key: "test_api_key_valid",
+          logger: logger,
+          default_logging: true,
+          metrics_backend: backend
+        )
+        client = SecApi::Client.new(config)
+
+        stubs.get("/test") { [200, {}, "{}"] }
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |builder|
+            builder.use SecApi::Middleware::Instrumentation, config: config
+            builder.adapter :test, stubs
+          end
+        )
+
+        client.connection.get("/test")
+
+        # Logging should have happened (configured first, takes precedence)
+        log_output.rewind
+        log_content = log_output.read
+        expect(log_content).to include("secapi.request.complete")
+
+        # Metrics backend should NOT have received request metrics (logging took precedence)
+        increment_calls = backend.calls.select { |c| c[:type] == :increment }
+        expect(increment_calls.map { |c| c[:metric] }).not_to include("sec_api.requests.total")
+      end
+    end
+  end
 end

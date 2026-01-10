@@ -9,6 +9,7 @@ module SecApi
       @_config = config
       @_config.validate!
       setup_default_logging if @_config.default_logging && @_config.logger
+      setup_default_metrics if @_config.metrics_backend
       @_rate_limit_tracker = RateLimitTracker.new
     end
 
@@ -394,6 +395,55 @@ module SecApi
       @_config.on_error ||= ->(request_id:, error:, url:, method:) {
         StructuredLogger.log_error(logger, :error, # Always error on failure
           request_id: request_id, error: error, url: url, method: method)
+      }
+    end
+
+    # Sets up default metrics callbacks when metrics_backend is configured.
+    #
+    # Uses {SecApi::MetricsCollector} to record metrics for all request
+    # lifecycle events. Explicit callbacks configured by the user take
+    # precedence and will not be overridden.
+    #
+    # @return [void]
+    # @api private
+    def setup_default_metrics
+      backend = @_config.metrics_backend
+
+      # Only set callbacks that aren't already configured
+      @_config.on_response ||= ->(request_id:, status:, duration_ms:, url:, method:) {
+        MetricsCollector.record_response(backend,
+          status: status, duration_ms: duration_ms, method: method)
+      }
+
+      @_config.on_retry ||= ->(request_id:, attempt:, max_attempts:, error_class:, error_message:, will_retry_in:) {
+        MetricsCollector.record_retry(backend,
+          attempt: attempt, error_class: error_class)
+      }
+
+      @_config.on_error ||= ->(request_id:, error:, url:, method:) {
+        MetricsCollector.record_error(backend,
+          error_class: error.class.name, method: method)
+      }
+
+      @_config.on_rate_limit ||= ->(info) {
+        MetricsCollector.record_rate_limit(backend,
+          retry_after: info[:retry_after])
+      }
+
+      @_config.on_throttle ||= ->(info) {
+        MetricsCollector.record_throttle(backend,
+          remaining: info[:remaining], delay: info[:delay])
+      }
+
+      # Streaming callbacks (record_filing, record_reconnect)
+      @_config.on_filing ||= ->(filing:, latency_ms:, received_at:) {
+        MetricsCollector.record_filing(backend,
+          latency_ms: latency_ms, form_type: filing.form_type)
+      }
+
+      @_config.on_reconnect ||= ->(info) {
+        MetricsCollector.record_reconnect(backend,
+          attempt_count: info[:attempt_count], downtime_seconds: info[:downtime_seconds])
       }
     end
   end

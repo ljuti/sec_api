@@ -632,4 +632,36 @@ RSpec.describe SecApi::Config do
       expect(config.default_logging).to eq(true)
     end
   end
+
+  describe "metrics_backend configuration (Story 7.4)" do
+    it "defaults to nil when not provided" do
+      config = SecApi::Config.new(api_key: "valid_test_key_123")
+      expect(config.metrics_backend).to be_nil
+    end
+
+    it "accepts a metrics backend instance" do
+      # Use a Struct that responds to the expected methods
+      backend = Struct.new(:name) do
+        def increment(metric, tags: nil)
+        end
+
+        def histogram(metric, value, tags: nil)
+        end
+
+        def gauge(metric, value, tags: nil)
+        end
+      end.new("test")
+
+      config = SecApi::Config.new(api_key: "valid_test_key_123", metrics_backend: backend)
+      expect(config.metrics_backend).not_to be_nil
+      expect(config.metrics_backend).to respond_to(:increment)
+      expect(config.metrics_backend).to respond_to(:histogram)
+      expect(config.metrics_backend).to respond_to(:gauge)
+    end
+
+    it "can be set to nil to disable default metrics" do
+      config = SecApi::Config.new(api_key: "valid_test_key_123", metrics_backend: nil)
+      expect(config.metrics_backend).to be_nil
+    end
+  end
 end

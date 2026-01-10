@@ -403,6 +403,50 @@ module SecApi
   #       }
   #     )
   #
+  # @!attribute [rw] metrics_backend
+  #   @return [Object, nil] Metrics backend instance (StatsD, Datadog::Statsd, etc.).
+  #     When configured, automatically sets up metrics callbacks for all operations
+  #     using {SecApi::MetricsCollector}. The backend must respond to `increment`,
+  #     `histogram`, and/or `gauge` methods. Default: nil.
+  #     Explicit callback configurations take precedence over default metrics.
+  #
+  #   @example StatsD backend
+  #     require 'statsd-ruby'
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       metrics_backend: StatsD.new('localhost', 8125)
+  #     )
+  #     # Metrics automatically collected: sec_api.requests.*, sec_api.retries.*, etc.
+  #
+  #   @example Datadog StatsD backend
+  #     require 'datadog/statsd'
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       metrics_backend: Datadog::Statsd.new('localhost', 8125)
+  #     )
+  #     # Metrics include tags: method, status, error_class, attempt
+  #
+  #   @example With custom callbacks (metrics_backend + custom on_error)
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       metrics_backend: statsd,
+  #       on_error: ->(request_id:, error:, url:, method:) {
+  #         # Custom error handling takes precedence over default metrics
+  #         Bugsnag.notify(error)
+  #         # You can still call MetricsCollector manually if needed
+  #         SecApi::MetricsCollector.record_error(statsd, error_class: error.class.name, method: method)
+  #       }
+  #     )
+  #
+  #   @example Combined with default_logging
+  #     config = SecApi::Config.new(
+  #       api_key: "...",
+  #       logger: Rails.logger,
+  #       default_logging: true,
+  #       metrics_backend: Datadog::Statsd.new('localhost', 8125)
+  #     )
+  #     # Both logging AND metrics are automatically configured
+  #
   class Config < Anyway::Config
     config_name :secapi
 
@@ -434,7 +478,8 @@ module SecApi
       :stream_max_reconnect_delay,
       :stream_backoff_multiplier,
       :stream_latency_warning_threshold,
-      :default_logging
+      :default_logging,
+      :metrics_backend
 
     # Sensible defaults
     def initialize(*)
