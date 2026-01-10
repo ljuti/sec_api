@@ -24,10 +24,11 @@ module SecApi
     # @param message [String] Error message
     # @param attempts [Integer] Number of reconnection attempts made
     # @param downtime_seconds [Float] Total downtime in seconds
-    def initialize(message:, attempts:, downtime_seconds:)
+    # @param request_id [String, nil] Request correlation ID (optional, WebSocket context may not have one)
+    def initialize(message:, attempts:, downtime_seconds:, request_id: nil)
       @attempts = attempts
       @downtime_seconds = downtime_seconds
-      super(message: message, original_error: nil)
+      super(message, request_id: request_id)
     end
   end
 end

@@ -23,6 +23,32 @@ RSpec.describe "Specific Error Classes" do
           end
         }.not_to raise_error
       end
+
+      describe "request_id propagation" do
+        it "accepts request_id keyword argument" do
+          error = described_class.new("Rate limited", request_id: "rate-123")
+          expect(error.request_id).to eq("rate-123")
+        end
+
+        it "includes request_id in error message" do
+          error = described_class.new("Rate limited", request_id: "rate-456")
+          expect(error.message).to eq("[rate-456] Rate limited")
+        end
+
+        it "passes request_id alongside retry_after and reset_at" do
+          reset_time = Time.now + 60
+          error = described_class.new(
+            "Rate limited",
+            retry_after: 30,
+            reset_at: reset_time,
+            request_id: "rate-789"
+          )
+          expect(error.request_id).to eq("rate-789")
+          expect(error.retry_after).to eq(30)
+          expect(error.reset_at).to eq(reset_time)
+          expect(error.message).to include("[rate-789]")
+        end
+      end
     end
 
     describe SecApi::ServerError do
@@ -44,6 +70,18 @@ RSpec.describe "Specific Error Classes" do
           end
         }.not_to raise_error
       end
+
+      describe "request_id propagation" do
+        it "accepts request_id keyword argument" do
+          error = described_class.new("Server error", request_id: "srv-123")
+          expect(error.request_id).to eq("srv-123")
+        end
+
+        it "includes request_id in error message" do
+          error = described_class.new("Server error", request_id: "srv-456")
+          expect(error.message).to eq("[srv-456] Server error")
+        end
+      end
     end
 
     describe SecApi::NetworkError do
@@ -64,6 +102,18 @@ RSpec.describe "Specific Error Classes" do
             # Successfully caught
           end
         }.not_to raise_error
+      end
+
+      describe "request_id propagation" do
+        it "accepts request_id keyword argument" do
+          error = described_class.new("Network timeout", request_id: "net-123")
+          expect(error.request_id).to eq("net-123")
+        end
+
+        it "includes request_id in error message" do
+          error = described_class.new("Network timeout", request_id: "net-456")
+          expect(error.message).to eq("[net-456] Network timeout")
+        end
       end
     end
   end
@@ -88,6 +138,18 @@ RSpec.describe "Specific Error Classes" do
           end
         }.not_to raise_error
       end
+
+      describe "request_id propagation" do
+        it "accepts request_id keyword argument" do
+          error = described_class.new("Auth failed", request_id: "auth-123")
+          expect(error.request_id).to eq("auth-123")
+        end
+
+        it "includes request_id in error message" do
+          error = described_class.new("Auth failed", request_id: "auth-456")
+          expect(error.message).to eq("[auth-456] Auth failed")
+        end
+      end
     end
 
     describe SecApi::NotFoundError do
@@ -108,6 +170,18 @@ RSpec.describe "Specific Error Classes" do
             # Successfully caught
           end
         }.not_to raise_error
+      end
+
+      describe "request_id propagation" do
+        it "accepts request_id keyword argument" do
+          error = described_class.new("Not found", request_id: "nf-123")
+          expect(error.request_id).to eq("nf-123")
+        end
+
+        it "includes request_id in error message" do
+          error = described_class.new("Not found", request_id: "nf-456")
+          expect(error.message).to eq("[nf-456] Not found")
+        end
       end
     end
 
@@ -130,6 +204,18 @@ RSpec.describe "Specific Error Classes" do
           end
         }.not_to raise_error
       end
+
+      describe "request_id propagation" do
+        it "accepts request_id keyword argument" do
+          error = described_class.new("Invalid input", request_id: "val-123")
+          expect(error.request_id).to eq("val-123")
+        end
+
+        it "includes request_id in error message" do
+          error = described_class.new("Invalid input", request_id: "val-456")
+          expect(error.message).to eq("[val-456] Invalid input")
+        end
+      end
     end
 
     describe SecApi::PaginationError do
@@ -150,6 +236,18 @@ RSpec.describe "Specific Error Classes" do
             # Successfully caught
           end
         }.not_to raise_error
+      end
+
+      describe "request_id propagation" do
+        it "accepts request_id keyword argument" do
+          error = described_class.new("No more pages", request_id: "page-123")
+          expect(error.request_id).to eq("page-123")
+        end
+
+        it "includes request_id in error message" do
+          error = described_class.new("No more pages", request_id: "page-456")
+          expect(error.message).to eq("[page-456] No more pages")
+        end
       end
     end
   end

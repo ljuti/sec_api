@@ -43,8 +43,9 @@ module SecApi
     # @param message [String] Error message describing the rate limit
     # @param retry_after [Integer, nil] Seconds to wait (from Retry-After header)
     # @param reset_at [Time, nil] Timestamp when rate limit resets (from X-RateLimit-Reset header)
-    def initialize(message, retry_after: nil, reset_at: nil)
-      super(message)
+    # @param request_id [String, nil] Request correlation ID for tracing
+    def initialize(message, retry_after: nil, reset_at: nil, request_id: nil)
+      super(message, request_id: request_id)
       @retry_after = retry_after
       @reset_at = reset_at
     end

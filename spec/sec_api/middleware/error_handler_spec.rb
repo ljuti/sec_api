@@ -2,6 +2,7 @@
 
 require "spec_helper"
 require "faraday"
+require "ostruct"
 
 RSpec.describe SecApi::Middleware::ErrorHandler do
   let(:stubs) { Faraday::Adapter::Test::Stubs.new }
@@ -442,6 +443,128 @@ RSpec.describe SecApi::Middleware::ErrorHandler do
       }.to raise_error(SecApi::RateLimitError) do |error|
         expect(error.message.downcase).to include("automatic")
         expect(error.message.length).to be > 20 # Has meaningful context
+      end
+    end
+  end
+
+  describe "request_id propagation" do
+    # Helper to create a middleware that returns a mock response
+    # Uses OpenStruct to mock Faraday::Response while preserving custom keys like request_id
+    def middleware_with_response(status, headers = {}, body = "")
+      described_class.new(lambda { |env|
+        env[:status] = status
+        env[:response_headers] = headers
+        env[:body] = body
+        OpenStruct.new(env: env)
+      })
+    end
+
+    it "includes request_id in ValidationError when env has request_id" do
+      middleware = middleware_with_response(400)
+      env = {method: :get, url: URI("http://example.com/test"), request_id: "req-validation-123", status: nil}
+
+      expect {
+        middleware.call(env)
+      }.to raise_error(SecApi::ValidationError) do |error|
+        expect(error.request_id).to eq("req-validation-123")
+        expect(error.message).to include("[req-validation-123]")
+      end
+    end
+
+    it "includes request_id in AuthenticationError when env has request_id" do
+      middleware = middleware_with_response(401)
+      env = {method: :get, url: URI("http://example.com/test"), request_id: "req-auth-456", status: nil}
+
+      expect {
+        middleware.call(env)
+      }.to raise_error(SecApi::AuthenticationError) do |error|
+        expect(error.request_id).to eq("req-auth-456")
+        expect(error.message).to include("[req-auth-456]")
+      end
+    end
+
+    it "includes request_id in NotFoundError when env has request_id" do
+      middleware = middleware_with_response(404)
+      env = {method: :get, url: URI("http://example.com/test"), request_id: "req-notfound-789", status: nil}
+
+      expect {
+        middleware.call(env)
+      }.to raise_error(SecApi::NotFoundError) do |error|
+        expect(error.request_id).to eq("req-notfound-789")
+        expect(error.message).to include("[req-notfound-789]")
+      end
+    end
+
+    it "includes request_id in RateLimitError when env has request_id" do
+      middleware = middleware_with_response(429, {"Retry-After" => "60"})
+      env = {method: :get, url: URI("http://example.com/test"), request_id: "req-ratelimit-abc", status: nil}
+
+      expect {
+        middleware.call(env)
+      }.to raise_error(SecApi::RateLimitError) do |error|
+        expect(error.request_id).to eq("req-ratelimit-abc")
+        expect(error.message).to include("[req-ratelimit-abc]")
+        expect(error.retry_after).to eq(60)
+      end
+    end
+
+    it "includes request_id in ServerError when env has request_id" do
+      middleware = middleware_with_response(500)
+      env = {method: :get, url: URI("http://example.com/test"), request_id: "req-server-def", status: nil}
+
+      expect {
+        middleware.call(env)
+      }.to raise_error(SecApi::ServerError) do |error|
+        expect(error.request_id).to eq("req-server-def")
+        expect(error.message).to include("[req-server-def]")
+      end
+    end
+
+    it "includes request_id in NetworkError on timeout when env has request_id" do
+      middleware = described_class.new(->(_env) { raise Faraday::TimeoutError, "timeout" })
+      env = {method: :get, url: URI("http://example.com/test"), request_id: "req-timeout-ghi"}
+
+      expect {
+        middleware.call(env)
+      }.to raise_error(SecApi::NetworkError) do |error|
+        expect(error.request_id).to eq("req-timeout-ghi")
+        expect(error.message).to include("[req-timeout-ghi]")
+      end
+    end
+
+    it "includes request_id in NetworkError on connection failure when env has request_id" do
+      middleware = described_class.new(->(_env) { raise Faraday::ConnectionFailed, "failed" })
+      env = {method: :get, url: URI("http://example.com/test"), request_id: "req-conn-jkl"}
+
+      expect {
+        middleware.call(env)
+      }.to raise_error(SecApi::NetworkError) do |error|
+        expect(error.request_id).to eq("req-conn-jkl")
+        expect(error.message).to include("[req-conn-jkl]")
+      end
+    end
+
+    it "includes request_id in NetworkError on SSL error when env has request_id" do
+      middleware = described_class.new(->(_env) { raise Faraday::SSLError, "SSL failed" })
+      env = {method: :get, url: URI("https://example.com/test"), request_id: "req-ssl-mno"}
+
+      expect {
+        middleware.call(env)
+      }.to raise_error(SecApi::NetworkError) do |error|
+        expect(error.request_id).to eq("req-ssl-mno")
+        expect(error.message).to include("[req-ssl-mno]")
+      end
+    end
+
+    it "handles nil request_id gracefully" do
+      middleware = middleware_with_response(500)
+      env = {method: :get, url: URI("http://example.com/test"), status: nil}
+
+      expect {
+        middleware.call(env)
+      }.to raise_error(SecApi::ServerError) do |error|
+        expect(error.request_id).to be_nil
+        expect(error.message).not_to include("[")
       end
     end
   end

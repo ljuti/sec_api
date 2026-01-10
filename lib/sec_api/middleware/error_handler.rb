@@ -28,8 +28,6 @@ module SecApi
     # @raise [ServerError] when API returns 5xx (Server Error)
     # @raise [NetworkError] when network issues occur (timeout, connection failure, SSL error)
     class ErrorHandler < Faraday::Middleware
-      include SecApi::CallbackHelper
-
       # Initializes the error handler middleware.
       #
       # @param app [Faraday::Middleware] The next middleware in the stack
@@ -54,7 +52,8 @@ module SecApi
         raise NetworkError.new(
           "Request timeout. " \
           "Check network connectivity or increase request_timeout in configuration. " \
-          "Original error: #{e.message}."
+          "Original error: #{e.message}.",
+          request_id: env[:request_id]
         )
       rescue Faraday::ConnectionFailed => e
         # Don't invoke on_error here - TransientErrors will be retried.
@@ -62,7 +61,8 @@ module SecApi
         raise NetworkError.new(
           "Connection failed: #{e.message}. " \
           "Verify network connectivity and sec-api.io availability. " \
-          "This is a temporary issue that will be retried automatically."
+          "This is a temporary issue that will be retried automatically.",
+          request_id: env[:request_id]
         )
       rescue Faraday::SSLError => e
         # Don't invoke on_error here - TransientErrors will be retried.
@@ -70,7 +70,8 @@ module SecApi
         raise NetworkError.new(
           "SSL/TLS error: #{e.message}. " \
           "This may indicate certificate validation issues or secure connection problems. " \
-          "Verify your system's SSL certificates are up to date."
+          "Verify your system's SSL certificates are up to date.",
+          request_id: env[:request_id]
         )
       end
 
@@ -96,32 +97,39 @@ module SecApi
       # @param env [Faraday::Env] The response environment
       # @return [SecApi::Error, nil] The appropriate error, or nil for unhandled status
       def build_error_for_status(env)
+        request_id = env[:request_id]
+
         case env[:status]
         when 400
           ValidationError.new(
             "Bad request (400): The request was malformed or contains invalid parameters. " \
-            "Check your query parameters, ticker symbols, or search criteria."
+            "Check your query parameters, ticker symbols, or search criteria.",
+            request_id: request_id
           )
         when 401
           AuthenticationError.new(
             "API authentication failed (401 Unauthorized). " \
             "Verify your API key in config/secapi.yml or SECAPI_API_KEY environment variable. " \
-            "Get your API key from https://sec-api.io."
+            "Get your API key from https://sec-api.io.",
+            request_id: request_id
           )
         when 403
           AuthenticationError.new(
             "Access forbidden (403): Your API key does not have permission for this resource. " \
-            "Verify your subscription plan at https://sec-api.io or contact support."
+            "Verify your subscription plan at https://sec-api.io or contact support.",
+            request_id: request_id
           )
         when 404
           NotFoundError.new(
             "Resource not found (404): #{env[:url]&.path || "unknown"}. " \
-            "Check ticker symbol, CIK, or filing identifier."
+            "Check ticker symbol, CIK, or filing identifier.",
+            request_id: request_id
           )
         when 422
           ValidationError.new(
             "Unprocessable entity (422): The request was valid but could not be processed. " \
-            "This may indicate invalid query logic or unsupported parameter combinations."
+            "This may indicate invalid query logic or unsupported parameter combinations.",
+            request_id: request_id
           )
         when 429
           retry_after = parse_retry_after(env[:response_headers])
@@ -130,12 +138,14 @@ module SecApi
           RateLimitError.new(
             build_rate_limit_message(retry_after, reset_at),
             retry_after: retry_after,
-            reset_at: reset_at
+            reset_at: reset_at,
+            request_id: request_id
           )
         when 500..504
           ServerError.new(
             "sec-api.io server error (#{env[:status]}). " \
-            "automatic retry attempts exhausted. This may indicate a prolonged outage."
+            "automatic retry attempts exhausted. This may indicate a prolonged outage.",
+            request_id: request_id
           )
         end
       end
@@ -200,8 +210,6 @@ module SecApi
       # All on_error invocations happen in Instrumentation middleware (first in stack)
       # after exceptions escape all middleware (including retry). This ensures on_error
       # is called exactly once, only when the request ultimately fails.
-
-      # log_callback_error is provided by CallbackHelper module (kept for potential future use)
     end
   end
 end

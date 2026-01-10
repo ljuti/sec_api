@@ -398,18 +398,15 @@ module SecApi
         # Normal closure - no error
       when CLOSE_POLICY_VIOLATION
         raise AuthenticationError.new(
-          message: "WebSocket authentication failed. Verify your API key is valid.",
-          status_code: 403
+          "WebSocket authentication failed. Verify your API key is valid."
         )
       when CLOSE_ABNORMAL
         raise NetworkError.new(
-          message: "WebSocket connection lost unexpectedly. Check network connectivity.",
-          original_error: nil
+          "WebSocket connection lost unexpectedly. Check network connectivity."
         )
       else
         raise NetworkError.new(
-          message: "WebSocket closed with code #{code}: #{reason}",
-          original_error: nil
+          "WebSocket closed with code #{code}: #{reason}"
         )
       end
     end
@@ -428,8 +425,7 @@ module SecApi
 
       error_message = event.respond_to?(:message) ? event.message : event.to_s
       raise NetworkError.new(
-        message: "WebSocket error: #{error_message}",
-        original_error: nil
+        "WebSocket error: #{error_message}"
       )
     end
 

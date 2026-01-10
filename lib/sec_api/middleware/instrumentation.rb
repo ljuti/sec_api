@@ -24,8 +24,42 @@ module SecApi
     #   )
     #   client = SecApi::Client.new(config)
     #
+    # @example Using external request_id for distributed tracing
+    #   # Create custom middleware to inject trace ID from your APM system
+    #   class TraceIdMiddleware < Faraday::Middleware
+    #     def call(env)
+    #       # Use existing trace ID from Datadog, New Relic, OpenTelemetry, etc.
+    #       # Falls back to SecureRandom.uuid if no trace ID is available
+    #       env[:request_id] = Datadog.tracer.active_span&.span_id ||
+    #                          RequestStore[:request_id] ||
+    #                          SecureRandom.uuid
+    #       @app.call(env)
+    #     end
+    #   end
+    #
+    #   # Register BEFORE sec_api Instrumentation middleware
+    #   Faraday.new do |conn|
+    #     conn.use TraceIdMiddleware           # Sets env[:request_id]
+    #     conn.use SecApi::Middleware::Instrumentation  # Preserves via ||=
+    #     # ... rest of stack
+    #   end
+    #
+    # @example Correlating errors with APM spans
+    #   SecApi.configure do |config|
+    #     config.on_error = ->(request_id:, error:, **) {
+    #       if span = Datadog.tracer.active_span
+    #         span.set_tag('sec_api.request_id', request_id)
+    #         span.set_error(error)
+    #       end
+    #     }
+    #   end
+    #
     # @note Authorization headers are automatically sanitized from on_request callbacks
     #   to prevent API key leakage in logs.
+    #
+    # @note External request_id: If you pre-set env[:request_id] via upstream middleware,
+    #   this middleware will preserve it (uses ||= operator). This enables distributed
+    #   tracing integration with Datadog, New Relic, OpenTelemetry, and Rails request IDs.
     #
     class Instrumentation < Faraday::Middleware
       include SecApi::CallbackHelper
