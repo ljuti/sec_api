@@ -20,9 +20,6 @@ module SecApi
     #
     # @see SecApi::Collections::Filings
     class Filing < Dry::Struct
-      # Strict schema - reject unknown attributes
-      schema schema.strict
-
       transform_keys { |key| key.to_s.underscore }
       transform_keys(&:to_sym)
 
@@ -103,6 +100,18 @@ module SecApi
       #   @return [String] SEC accession number (e.g., "0000320193-24-000001")
       attribute :accession_number, Types::String
 
+      # @!attribute [r] description
+      #   @return [String, nil] optional filing description
+      attribute? :description, Types::String.optional
+
+      # @!attribute [r] series_and_classes_contracts_information
+      #   @return [Array<Hash>, nil] series and classes/contracts info (mutual funds, ETFs)
+      attribute? :series_and_classes_contracts_information, Types::Array.of(Types::Hash).optional
+
+      # @!attribute [r] effectiveness_date
+      #   @return [String, nil] effectiveness date for registration statements
+      attribute? :effectiveness_date, Types::String.optional
+
       # Override constructor to ensure immutability
       def initialize(attributes)
         super
@@ -138,6 +147,19 @@ module SecApi
         url
       end
 
+      # Creates a Filing from API response data.
+      #
+      # Normalizes camelCase keys from the API to snake_case and recursively
+      # builds nested Entity, DocumentFormatFile, and DataFile objects.
+      #
+      # @param data [Hash] API response hash with filing data
+      # @return [Filing] Immutable filing object
+      #
+      # @example
+      #   data = { id: "abc123", ticker: "AAPL", formType: "10-K", ... }
+      #   filing = Filing.from_api(data)
+      #   filing.form_type  # => "10-K"
+      #
       def self.from_api(data)
         data[:company_name] = data.delete(:companyName) if data.key?(:companyName)
         data[:company_name_long] = data.delete(:companyNameLong) if data.key?(:companyNameLong)
@@ -151,6 +173,8 @@ module SecApi
         data[:documents] = data.delete(:documentFormatFiles) if data.key?(:documentFormatFiles)
         data[:data_files] = data.delete(:dataFiles) if data.key?(:dataFiles)
         data[:accession_number] = data.delete(:accessionNo) if data.key?(:accessionNo)
+        data[:series_and_classes_contracts_information] = data.delete(:seriesAndClassesContractsInformation) if data.key?(:seriesAndClassesContractsInformation)
+        data[:effectiveness_date] = data.delete(:effectivenessDate) if data.key?(:effectivenessDate)
 
         entities = data[:entities].map do |entity|
           Entity.from_api(entity)
