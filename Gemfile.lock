@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    sec_api (0.1.0)
+    sec_api (1.0.0)
       anyway_config
       dry-struct
       eventmachine (~> 1.2)
@@ -180,6 +180,7 @@ GEM
       base64
       websocket-extensions (>= 0.1.0)
     websocket-extensions (0.1.5)
+    yard (0.9.38)
     zeitwerk (2.6.18)
 
 PLATFORMS
@@ -193,6 +194,7 @@ DEPENDENCIES
   rspec (~> 3.0)
   sec_api!
   standard (~> 1.3)
+  yard (~> 0.9)
 
 BUNDLED WITH
    2.6.6
