@@ -26,7 +26,7 @@ module SecApi
       attribute? :description, Types::String
       attribute :type, Types::String
       attribute :url, Types::String
-      attribute :size, Types::Coercible::Integer
+      attribute? :size, Types::Coercible::Integer.optional
 
       # Creates a DocumentFormatFile from API response data.
       #
@@ -37,6 +37,11 @@ module SecApi
       #
       def self.from_api(data)
         data[:url] = data.delete(:documentUrl) if data.key?(:documentUrl)
+
+        # API sometimes returns whitespace for size - normalize to nil
+        if data[:size].is_a?(String) && data[:size].strip.empty?
+          data[:size] = nil
+        end
 
         new(data)
       end
