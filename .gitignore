@@ -16,4 +16,4 @@
 _bmad/
 _bmad-output/
 .claude/
-.node-version
+.node-versionGemfile.lock
