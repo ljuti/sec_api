@@ -61,8 +61,8 @@ module SecApi
       attribute :form_type, Types::String
 
       # @!attribute [r] period_of_report
-      #   @return [String] reporting period end date
-      attribute :period_of_report, Types::String
+      #   @return [String, nil] reporting period end date (may be nil for some filing types)
+      attribute? :period_of_report, Types::String.optional
 
       # @!attribute [r] filed_at
       #   @return [Date] filing date (automatically coerced from string via Dry::Types)

@@ -38,10 +38,10 @@ module SecApi
       def self.from_api(data)
         data[:url] = data.delete(:documentUrl) if data.key?(:documentUrl)
 
-        # API sometimes returns whitespace for size - normalize to nil
-        # Handle both symbol and string keys, delete the bad value entirely
+        # API sometimes returns whitespace (including non-breaking spaces) for size
+        # Use POSIX [[:space:]] to match all unicode whitespace including NBSP
         [:size, "size"].each do |key|
-          if data.key?(key) && data[key].is_a?(String) && data[key].strip.empty?
+          if data.key?(key) && data[key].is_a?(String) && data[key].match?(/\A[[:space:]]*\z/)
             data.delete(key)
           end
         end
