@@ -6,450 +6,193 @@ RSpec.describe SecApi::Extractor do
   let(:config) { SecApi::Config.new(api_key: "test_api_key_valid") }
   let(:client) { SecApi::Client.new(config) }
   let(:extractor) { client.extractor }
+  let(:filing_url) { "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/example.htm" }
 
   describe "#extract" do
-    it "returns ExtractedData object (not raw hash)" do
+    it "returns extracted text as a string" do
       stubs = Faraday::Adapter::Test::Stubs.new
-      stubs.post("/extractor") do
-        [200, {"Content-Type" => "application/json"}, {
-          "text" => "Sample extracted text from filing",
-          "sections" => {
-            "risk_factors" => "Risk factors content",
-            "financials" => "Financial statements content"
-          },
-          "metadata" => {
-            "source_url" => "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/example.htm",
-            "form_type" => "10-K"
-          }
-        }.to_json]
+      stubs.get("/extractor") do |env|
+        expect(env.params["item"]).to eq("1A")
+        expect(env.params["url"]).to eq(filing_url)
+        expect(env.params["token"]).to eq("test_api_key_valid")
+        [200, {"Content-Type" => "text/plain"}, "Risk factors content from filing"]
       end
 
       allow(client).to receive(:connection).and_return(
         Faraday.new do |conn|
-          conn.request :json
-          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
           conn.use SecApi::Middleware::ErrorHandler
           conn.adapter :test, stubs
         end
       )
 
-      extracted = extractor.extract("https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/example.htm")
+      result = extractor.extract(filing_url, item: :risk_factors)
 
-      expect(extracted).to be_a(SecApi::ExtractedData)
-      expect(extracted).not_to be_a(Hash)
+      expect(result).to be_a(String)
+      expect(result).to eq("Risk factors content from filing")
       stubs.verify_stubbed_calls
     end
 
-    it "provides access to attributes via methods (not hash keys)" do
+    it "accepts Filing object and extracts URL" do
+      filing = double("Filing", url: filing_url)
+
       stubs = Faraday::Adapter::Test::Stubs.new
-      stubs.post("/extractor") do
-        [200, {"Content-Type" => "application/json"}, {
-          "text" => "Extracted filing text",
-          "sections" => {
-            "risk_factors" => "Risk content"
-          }
-        }.to_json]
+      stubs.get("/extractor") do |env|
+        expect(env.params["url"]).to eq(filing_url)
+        [200, {"Content-Type" => "text/plain"}, "Extracted content"]
       end
 
       allow(client).to receive(:connection).and_return(
         Faraday.new do |conn|
-          conn.request :json
-          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
           conn.use SecApi::Middleware::ErrorHandler
           conn.adapter :test, stubs
         end
       )
 
-      extracted = extractor.extract("https://example.com/filing.htm")
+      result = extractor.extract(filing, item: :risk_factors)
 
-      expect(extracted.text).to eq("Extracted filing text")
-      expect(extracted.sections).to eq({risk_factors: "Risk content"})
+      expect(result).to eq("Extracted content")
       stubs.verify_stubbed_calls
     end
 
-    it "is immutable (frozen)" do
+    it "defaults type to text" do
       stubs = Faraday::Adapter::Test::Stubs.new
-      stubs.post("/extractor") do
-        [200, {"Content-Type" => "application/json"}, {
-          "text" => "Sample text"
-        }.to_json]
+      stubs.get("/extractor") do |env|
+        expect(env.params["type"]).to eq("text")
+        [200, {"Content-Type" => "text/plain"}, "Text content"]
       end
 
       allow(client).to receive(:connection).and_return(
         Faraday.new do |conn|
-          conn.request :json
-          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
           conn.use SecApi::Middleware::ErrorHandler
           conn.adapter :test, stubs
         end
       )
 
-      extracted = extractor.extract("https://example.com/filing.htm")
-
-      expect(extracted).to be_frozen
+      extractor.extract(filing_url, item: :risk_factors)
       stubs.verify_stubbed_calls
     end
 
-    it "handles Filing object input" do
-      filing = double("Filing", url: "https://www.sec.gov/filing.htm")
-
+    it "allows html type" do
       stubs = Faraday::Adapter::Test::Stubs.new
-      stubs.post("/extractor") do
-        [200, {"Content-Type" => "application/json"}, {
-          "text" => "Extracted from filing object"
-        }.to_json]
+      stubs.get("/extractor") do |env|
+        expect(env.params["type"]).to eq("html")
+        [200, {"Content-Type" => "text/html"}, "<p>HTML content</p>"]
       end
 
       allow(client).to receive(:connection).and_return(
         Faraday.new do |conn|
-          conn.request :json
-          conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
           conn.use SecApi::Middleware::ErrorHandler
           conn.adapter :test, stubs
         end
       )
 
-      extracted = extractor.extract(filing)
+      result = extractor.extract(filing_url, item: :risk_factors, type: "html")
 
-      expect(extracted).to be_a(SecApi::ExtractedData)
-      expect(extracted.text).to eq("Extracted from filing object")
+      expect(result).to eq("<p>HTML content</p>")
       stubs.verify_stubbed_calls
     end
 
-    context "without sections parameter (default behavior)" do
-      it "extracts full filing text when no sections specified" do
-        stubs = Faraday::Adapter::Test::Stubs.new
-        stubs.post("/extractor") do |env|
-          body = JSON.parse(env.body)
-          expect(body).not_to have_key("item")
-          [200, {"Content-Type" => "application/json"}, {
-            "text" => "Full filing text content with all sections",
-            "sections" => {
-              "risk_factors" => "Risk content",
-              "mda" => "MD&A content"
-            }
-          }.to_json]
-        end
-
-        allow(client).to receive(:connection).and_return(
-          Faraday.new do |conn|
-            conn.request :json
-            conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-            conn.use SecApi::Middleware::ErrorHandler
-            conn.adapter :test, stubs
-          end
-        )
-
-        extracted = extractor.extract("https://example.com/filing.htm")
-
-        expect(extracted).to be_a(SecApi::ExtractedData)
-        expect(extracted.text).to eq("Full filing text content with all sections")
-        expect(extracted.sections).to include(:risk_factors, :mda)
-        stubs.verify_stubbed_calls
-      end
-
-      it "extracts full filing when sections is empty array" do
-        stubs = Faraday::Adapter::Test::Stubs.new
-        stubs.post("/extractor") do |env|
-          body = JSON.parse(env.body)
-          expect(body).not_to have_key("item")
-          [200, {"Content-Type" => "application/json"}, {
-            "text" => "Full filing text"
-          }.to_json]
-        end
-
-        allow(client).to receive(:connection).and_return(
-          Faraday.new do |conn|
-            conn.request :json
-            conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-            conn.use SecApi::Middleware::ErrorHandler
-            conn.adapter :test, stubs
-          end
-        )
-
-        extracted = extractor.extract("https://example.com/filing.htm", sections: [])
-
-        expect(extracted.text).to eq("Full filing text")
-        stubs.verify_stubbed_calls
-      end
-    end
-
-    context "with sections parameter" do
-      it "extracts single section via item parameter" do
-        stubs = Faraday::Adapter::Test::Stubs.new
-        stubs.post("/extractor") do |env|
-          body = JSON.parse(env.body)
-          expect(body["item"]).to eq("1A")
-          [200, {"Content-Type" => "application/json"}, {
-            "text" => "Risk factors content from filing",
-            "sections" => {"risk_factors" => "Risk factors content from filing"}
-          }.to_json]
-        end
-
-        allow(client).to receive(:connection).and_return(
-          Faraday.new do |conn|
-            conn.request :json
-            conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-            conn.use SecApi::Middleware::ErrorHandler
-            conn.adapter :test, stubs
-          end
-        )
-
-        extracted = extractor.extract("https://example.com/filing.htm", sections: [:risk_factors])
-
-        expect(extracted).to be_a(SecApi::ExtractedData)
-        expect(extracted.sections).to include(:risk_factors)
-        stubs.verify_stubbed_calls
-      end
-
-      it "extracts multiple sections with separate API calls" do
-        call_count = 0
-        expected_items = ["1A", "7"]
-
-        stubs = Faraday::Adapter::Test::Stubs.new
-        stubs.post("/extractor") do |env|
-          body = JSON.parse(env.body)
-          expect(expected_items).to include(body["item"])
-          call_count += 1
-
-          section_name = (body["item"] == "1A") ? "risk_factors" : "mda"
-          section_content = (body["item"] == "1A") ? "Risk factors text" : "MD&A analysis text"
-
-          [200, {"Content-Type" => "application/json"}, {
-            "text" => section_content,
-            "sections" => {section_name => section_content}
-          }.to_json]
-        end
-
-        allow(client).to receive(:connection).and_return(
-          Faraday.new do |conn|
-            conn.request :json
-            conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-            conn.use SecApi::Middleware::ErrorHandler
-            conn.adapter :test, stubs
-          end
-        )
-
-        extracted = extractor.extract("https://example.com/filing.htm", sections: [:risk_factors, :mda])
-
-        expect(extracted).to be_a(SecApi::ExtractedData)
-        expect(extracted.sections.keys).to contain_exactly(:risk_factors, :mda)
-        expect(call_count).to eq(2)
-      end
-
-      it "maps Ruby symbols to SEC item identifiers" do
-        section_mappings = {
-          risk_factors: "1A",
-          business: "1",
-          mda: "7",
-          financials: "8",
-          legal_proceedings: "3",
-          properties: "2",
-          market_risk: "7A"
-        }
-
-        section_mappings.each do |symbol, expected_item|
+    context "section mapping" do
+      {
+        risk_factors: "1A",
+        business: "1",
+        mda: "7",
+        financials: "8",
+        legal_proceedings: "3",
+        properties: "2",
+        market_risk: "7A"
+      }.each do |symbol, expected_item|
+        it "maps :#{symbol} to item #{expected_item}" do
           stubs = Faraday::Adapter::Test::Stubs.new
-          stubs.post("/extractor") do |env|
-            body = JSON.parse(env.body)
-            expect(body["item"]).to eq(expected_item), "Expected #{symbol} to map to #{expected_item}, got #{body["item"]}"
-            [200, {"Content-Type" => "application/json"}, {
-              "sections" => {symbol.to_s => "Content"}
-            }.to_json]
+          stubs.get("/extractor") do |env|
+            expect(env.params["item"]).to eq(expected_item)
+            [200, {"Content-Type" => "text/plain"}, "Content"]
           end
 
           allow(client).to receive(:connection).and_return(
             Faraday.new do |conn|
-              conn.request :json
-              conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
               conn.use SecApi::Middleware::ErrorHandler
               conn.adapter :test, stubs
             end
           )
 
-          extractor.extract("https://example.com/filing.htm", sections: [symbol])
+          extractor.extract(filing_url, item: symbol)
           stubs.verify_stubbed_calls
         end
       end
 
-      it "passes through unknown section names as-is" do
+      it "passes through unknown item codes as-is" do
         stubs = Faraday::Adapter::Test::Stubs.new
-        stubs.post("/extractor") do |env|
-          body = JSON.parse(env.body)
-          expect(body["item"]).to eq("custom_section")
-          [200, {"Content-Type" => "application/json"}, {
-            "sections" => {"custom_section" => "Custom content"}
-          }.to_json]
+        stubs.get("/extractor") do |env|
+          expect(env.params["item"]).to eq("part2item1a")
+          [200, {"Content-Type" => "text/plain"}, "10-Q content"]
         end
 
         allow(client).to receive(:connection).and_return(
           Faraday.new do |conn|
-            conn.request :json
-            conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
             conn.use SecApi::Middleware::ErrorHandler
             conn.adapter :test, stubs
           end
         )
 
-        extracted = extractor.extract("https://example.com/filing.htm", sections: [:custom_section])
-
-        expect(extracted.sections).to include(:custom_section)
+        extractor.extract(filing_url, item: "part2item1a")
         stubs.verify_stubbed_calls
-      end
-
-      it "accepts string sections and converts to symbols" do
-        stubs = Faraday::Adapter::Test::Stubs.new
-        stubs.post("/extractor") do |env|
-          body = JSON.parse(env.body)
-          expect(body["item"]).to eq("1A")
-          [200, {"Content-Type" => "application/json"}, {
-            "sections" => {"risk_factors" => "Risk content from string input"}
-          }.to_json]
-        end
-
-        allow(client).to receive(:connection).and_return(
-          Faraday.new do |conn|
-            conn.request :json
-            conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-            conn.use SecApi::Middleware::ErrorHandler
-            conn.adapter :test, stubs
-          end
-        )
-
-        # Pass strings instead of symbols
-        extracted = extractor.extract("https://example.com/filing.htm", sections: ["risk_factors"])
-
-        expect(extracted.sections).to include(:risk_factors)
-        expect(extracted.risk_factors).to eq("Risk content from string input")
-        stubs.verify_stubbed_calls
-      end
-
-      it "propagates API errors during multi-section extraction" do
-        call_count = 0
-        stubs = Faraday::Adapter::Test::Stubs.new
-        stubs.post("/extractor") do |env|
-          call_count += 1
-          body = JSON.parse(env.body)
-
-          if body["item"] == "1A"
-            # First section succeeds
-            [200, {"Content-Type" => "application/json"}, {
-              "sections" => {"risk_factors" => "Risk content"}
-            }.to_json]
-          else
-            # Second section fails with rate limit
-            [429, {"Content-Type" => "application/json"}, {
-              "error" => "Rate limit exceeded"
-            }.to_json]
-          end
-        end
-
-        allow(client).to receive(:connection).and_return(
-          Faraday.new do |conn|
-            conn.request :json
-            conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-            conn.use SecApi::Middleware::ErrorHandler
-            conn.adapter :test, stubs
-          end
-        )
-
-        # Should raise error, partial results lost
-        expect {
-          extractor.extract("https://example.com/filing.htm", sections: [:risk_factors, :mda])
-        }.to raise_error(SecApi::RateLimitError)
-
-        expect(call_count).to eq(2)
       end
     end
 
-    context "with missing sections in filing" do
-      it "returns nil for sections not present in filing" do
+    context "error handling" do
+      it "raises NotFoundError for 404 response" do
         stubs = Faraday::Adapter::Test::Stubs.new
-        stubs.post("/extractor") do
-          # API returns empty response when section doesn't exist
-          [200, {"Content-Type" => "application/json"}, {
-            "text" => nil,
-            "sections" => {}
-          }.to_json]
+        stubs.get("/extractor") do
+          [404, {"Content-Type" => "application/json"}, '{"error": "Not found"}']
         end
 
         allow(client).to receive(:connection).and_return(
           Faraday.new do |conn|
-            conn.request :json
-            conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
             conn.use SecApi::Middleware::ErrorHandler
             conn.adapter :test, stubs
           end
         )
 
-        extracted = extractor.extract("https://example.com/filing.htm", sections: [:nonexistent_section])
-
-        # Section not in response should not appear in sections hash
-        expect(extracted.sections).not_to have_key(:nonexistent_section)
-        # Dynamic accessor returns nil for missing section
-        expect(extracted.nonexistent_section).to be_nil
-        stubs.verify_stubbed_calls
-      end
-
-      it "does not raise error when requested section is missing from filing" do
-        stubs = Faraday::Adapter::Test::Stubs.new
-        stubs.post("/extractor") do
-          [200, {"Content-Type" => "application/json"}, {
-            "sections" => nil
-          }.to_json]
-        end
-
-        allow(client).to receive(:connection).and_return(
-          Faraday.new do |conn|
-            conn.request :json
-            conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
-            conn.use SecApi::Middleware::ErrorHandler
-            conn.adapter :test, stubs
-          end
-        )
-
-        # Should not raise an error
         expect {
-          extractor.extract("https://example.com/filing.htm", sections: [:risk_factors])
-        }.not_to raise_error
-
-        stubs.verify_stubbed_calls
+          extractor.extract(filing_url, item: :risk_factors)
+        }.to raise_error(SecApi::NotFoundError)
       end
 
-      it "returns partial results when some sections exist and others don't" do
-        call_count = 0
+      it "raises AuthenticationError for 401 response" do
         stubs = Faraday::Adapter::Test::Stubs.new
-        stubs.post("/extractor") do |env|
-          call_count += 1
-          body = JSON.parse(env.body)
-
-          if body["item"] == "1A"
-            # risk_factors exists
-            [200, {"Content-Type" => "application/json"}, {
-              "sections" => {"risk_factors" => "Risk content exists"}
-            }.to_json]
-          else
-            # mda doesn't exist - empty response
-            [200, {"Content-Type" => "application/json"}, {
-              "sections" => {}
-            }.to_json]
-          end
+        stubs.get("/extractor") do
+          [401, {"Content-Type" => "application/json"}, '{"error": "Invalid API key"}']
         end
 
         allow(client).to receive(:connection).and_return(
           Faraday.new do |conn|
-            conn.request :json
-            conn.response :json, content_type: /\bjson$/, parser_options: {symbolize_names: true}
             conn.use SecApi::Middleware::ErrorHandler
             conn.adapter :test, stubs
           end
         )
 
-        extracted = extractor.extract("https://example.com/filing.htm", sections: [:risk_factors, :mda])
+        expect {
+          extractor.extract(filing_url, item: :risk_factors)
+        }.to raise_error(SecApi::AuthenticationError)
+      end
 
-        expect(extracted.risk_factors).to eq("Risk content exists")
-        expect(extracted.mda).to be_nil
-        expect(call_count).to eq(2)
+      it "raises RateLimitError for 429 response" do
+        stubs = Faraday::Adapter::Test::Stubs.new
+        stubs.get("/extractor") do
+          [429, {"Content-Type" => "application/json"}, '{"error": "Rate limit exceeded"}']
+        end
+
+        allow(client).to receive(:connection).and_return(
+          Faraday.new do |conn|
+            conn.use SecApi::Middleware::ErrorHandler
+            conn.adapter :test, stubs
+          end
+        )
+
+        expect {
+          extractor.extract(filing_url, item: :risk_factors)
+        }.to raise_error(SecApi::RateLimitError)
       end
     end
   end
