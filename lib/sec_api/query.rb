@@ -1,6 +1,17 @@
 module SecApi
   # Fluent query builder for SEC filing searches using Lucene query syntax.
   #
+  # Builder Pattern Design:
+  # Uses the fluent builder pattern (like ActiveRecord) for query construction.
+  # Key aspects:
+  # - Intermediate methods (.ticker, .form_type, .date_range) return `self` for chaining
+  # - Terminal method (.search) executes the query and returns results
+  # - Each `client.query` call returns a NEW instance (stateless between calls)
+  # - Instance variables accumulate query parts until terminal method is called
+  #
+  # Why fluent builder? More readable than positional args for complex queries,
+  # allows optional filters, and familiar to Ruby developers from ActiveRecord.
+  #
   # Provides a chainable, ActiveRecord-style interface for building and executing
   # SEC filing queries. Each method returns `self` for chaining, with `.search`
   # as the terminal method that executes the query.
@@ -75,6 +86,23 @@ module SecApi
     # @note This is not an exhaustive list. The API accepts any form type string.
     ALL_FORM_TYPES = (DOMESTIC_FORM_TYPES + INTERNATIONAL_FORM_TYPES).freeze
 
+    # Creates a new Query builder instance.
+    #
+    # Query instances are typically obtained via {Client#query} rather than
+    # direct instantiation. Each call to `client.query` returns a fresh instance
+    # to ensure query chains start with clean state.
+    #
+    # @param client [SecApi::Client] The parent client for API access
+    # @return [SecApi::Query] A new query builder instance
+    #
+    # @example Via client (recommended)
+    #   query = client.query
+    #   query.ticker("AAPL").search
+    #
+    # @example Direct instantiation (advanced)
+    #   query = SecApi::Query.new(client)
+    #
+    # @api private
     def initialize(client)
       @_client = client
       @query_parts = []
@@ -250,11 +278,11 @@ module SecApi
 
     # Executes the query and returns a lazy enumerator for automatic pagination.
     #
-    # Convenience method that chains {#search} with {Filings#auto_paginate}.
+    # Convenience method that chains {#search} with {SecApi::Collections::Filings#auto_paginate}.
     # Useful for backfill operations where you want to process all matching
     # filings across multiple pages.
     #
-    # @return [Enumerator::Lazy] lazy enumerator yielding Filing objects
+    # @return [Enumerator::Lazy] lazy enumerator yielding {SecApi::Objects::Filing} objects
     # @raise [PaginationError] when pagination state is invalid
     # @raise [AuthenticationError] when API key is invalid (from search)
     # @raise [RateLimitError] when rate limit exceeded (from search)
@@ -269,7 +297,7 @@ module SecApi
     #     .auto_paginate
     #     .each { |filing| ingest(filing) }
     #
-    # @see Collections::Filings#auto_paginate
+    # @see SecApi::Collections::Filings#auto_paginate
     def auto_paginate
       search.auto_paginate
     end
@@ -304,6 +332,8 @@ module SecApi
     def search(query = nil, options = {})
       if query.is_a?(String)
         # Backward-compatible: raw query string passed directly
+        warn "[DEPRECATION] Passing raw Lucene query strings to #search is deprecated. " \
+          "Use the fluent builder instead: client.query.ticker('AAPL').form_type('10-K').search"
         payload = {query: query}.merge(options)
         response = @_client.connection.post("/", payload)
         Collections::Filings.new(response.body)
@@ -345,7 +375,7 @@ module SecApi
     #
     # @param query [String] Full-text search query
     # @param options [Hash] Additional request options
-    # @return [SecApi::FulltextResults] Full-text search results
+    # @return [SecApi::Collections::FulltextResults] Full-text search results
     # @raise [SecApi::AuthenticationError] when API key is invalid
     # @raise [SecApi::RateLimitError] when rate limit exceeded
     # @raise [SecApi::NetworkError] when connection fails
@@ -353,12 +383,17 @@ module SecApi
     #
     def fulltext(query, options = {})
       response = @_client.connection.post("/full-text-search", {query: query}.merge(options))
-      FulltextResults.new(response.body)
+      Collections::FulltextResults.new(response.body)
     end
 
     private
 
     # Coerces various date types to ISO 8601 string format (YYYY-MM-DD).
+    #
+    # Why coercion? Users may pass Date, Time, DateTime, or String depending on
+    # their codebase. The API expects ISO 8601 strings. Rather than force users
+    # to convert, we accept common types and normalize them. This improves DX
+    # without sacrificing type safety (invalid formats still raise ArgumentError).
     #
     # @param value [Date, Time, DateTime, String] The date value to coerce
     # @return [String] ISO 8601 formatted date string

@@ -12,6 +12,14 @@ module SecApi
   #   entity.ticker   # => "AAPL"
   #   entity.name     # => "Apple Inc."
   class Mapping
+    # Creates a new Mapping proxy instance.
+    #
+    # Mapping instances are obtained via {Client#mapping} and cached
+    # for reuse. Direct instantiation is not recommended.
+    #
+    # @param client [SecApi::Client] The parent client for API access
+    # @return [SecApi::Mapping] A new mapping proxy instance
+    # @api private
     def initialize(client)
       @_client = client
     end

@@ -1,4 +1,22 @@
 module SecApi
+  # Error Taxonomy (Architecture ADR-2: Error Handling Strategy)
+  #
+  # SecApi uses a type-based retry taxonomy to distinguish retryable from non-retryable failures:
+  #
+  #   SecApi::Error (base)
+  #   ├── TransientError (retryable) - Network issues, server errors, rate limits
+  #   │   ├── NetworkError    - Timeouts, connection failures, SSL errors
+  #   │   ├── ServerError     - HTTP 5xx responses
+  #   │   └── RateLimitError  - HTTP 429 responses
+  #   └── PermanentError (fail-fast) - Client errors that require code/config changes
+  #       ├── AuthenticationError - HTTP 401, 403
+  #       ├── NotFoundError       - HTTP 404
+  #       └── ValidationError     - HTTP 400, 422, XBRL validation
+  #
+  # Design rationale: The retry middleware checks `error.is_a?(TransientError)` to determine
+  # retry eligibility. This enables automatic recovery for temporary issues (NFR5: 95%+ recovery)
+  # while failing fast on permanent errors to avoid wasting resources.
+  #
   # Base error class for all sec_api errors.
   #
   # All errors include a request_id for correlation with logs and

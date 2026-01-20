@@ -1,7 +1,11 @@
 # frozen_string_literal: true
 
 module SecApi
-  # Raised when XBRL data validation fails or data integrity issues are detected.
+  # Raised when request validation fails (400, 422) or XBRL data integrity issues are detected.
+  #
+  # Why PermanentError? The client sent invalid data - malformed query, invalid
+  # parameters, bad date format. This is a programming error or bad input that
+  # won't fix itself. Also raised for XBRL data that fails heuristic validation.
   #
   # This is a permanent error - indicates malformed or incomplete filing data.
   # Retrying won't help; the filing data itself has issues that require investigation.

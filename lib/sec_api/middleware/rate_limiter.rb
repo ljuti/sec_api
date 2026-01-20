@@ -39,18 +39,35 @@ module SecApi
     # @see SecApi::RateLimitState Immutable state value object
     #
     class RateLimiter < Faraday::Middleware
-      # Header names (Faraday normalizes to lowercase)
+      # Header name for total requests allowed per time window.
+      # @return [String] lowercase header name
       LIMIT_HEADER = "x-ratelimit-limit"
+
+      # Header name for requests remaining in current window.
+      # @return [String] lowercase header name
       REMAINING_HEADER = "x-ratelimit-remaining"
+
+      # Header name for Unix timestamp when the limit resets.
+      # @return [String] lowercase header name
       RESET_HEADER = "x-ratelimit-reset"
 
-      # Default throttle threshold (10% remaining)
+      # Default throttle threshold (10% remaining).
+      # Rationale: 10% provides a safety buffer to avoid hitting 429 while not being overly
+      # conservative. At typical sec-api.io limits (~100 req/min), 10% = 10 requests buffer,
+      # which handles small bursts. Lower values risk 429s; higher values waste capacity.
+      # (Architecture ADR-4: Rate Limiting Strategy)
       DEFAULT_THRESHOLD = 0.1
 
-      # Default warning threshold for excessive wait times (5 minutes)
+      # Default warning threshold for excessive wait times (5 minutes).
+      # Rationale: 5 minutes is long enough to indicate potential issues (API outage,
+      # misconfigured limits) but short enough to be actionable. Matches typical
+      # monitoring alert thresholds for request latency.
       DEFAULT_QUEUE_WAIT_WARNING_THRESHOLD = 300
 
-      # Default wait time when rate limit is exhausted but reset_at is unknown (60 seconds)
+      # Default wait time when rate limit is exhausted but reset_at is unknown (60 seconds).
+      # Rationale: sec-api.io rate limit windows are typically 60 seconds. When the API
+      # doesn't send X-RateLimit-Reset header, this provides a reasonable fallback that
+      # aligns with expected window duration without excessive waiting.
       DEFAULT_QUEUE_WAIT_SECONDS = 60
 
       # Creates a new RateLimiter middleware instance.
@@ -103,6 +120,12 @@ module SecApi
         )
         @logger = options[:logger]
         @log_level = options.fetch(:log_level, :info)
+        # Thread-safety design: Mutex + ConditionVariable pattern for efficient blocking.
+        # Why not just sleep? Sleep wastes CPU cycles polling. ConditionVariable allows
+        # threads to truly wait (zero CPU) until signaled, crucial for high-concurrency
+        # workloads (Sidekiq, Puma) where many threads may be rate-limited simultaneously.
+        # Why not atomic counters? We need to coordinate multiple operations (check state,
+        # increment queue, wait) atomically, which requires a mutex.
         @mutex = Mutex.new
         @condition = ConditionVariable.new
       end
@@ -174,8 +197,10 @@ module SecApi
             invoke_queue_callback(state, wait_time, request_id)
             warn_if_excessive_wait(wait_time, state.reset_at, request_id)
 
-            # Wait using ConditionVariable with timeout
-            # Re-check state after wakeup - another thread may have taken the slot
+            # Wait using ConditionVariable with timeout.
+            # Re-check state after wakeup in while loop - another thread may have taken
+            # the available capacity before this thread resumes (spurious wakeup handling).
+            # This is the standard pattern for condition variable usage (Mesa semantics).
             while should_wait?
               remaining_wait = calculate_remaining_wait_with_default
               break unless remaining_wait.positive?

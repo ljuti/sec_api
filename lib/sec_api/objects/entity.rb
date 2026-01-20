@@ -1,7 +1,35 @@
 require "dry/struct"
 
 module SecApi
+  # Value objects namespace for immutable, thread-safe data structures.
+  #
+  # All objects in this namespace are Dry::Struct subclasses that are frozen
+  # on construction. They represent API response data in a type-safe manner.
+  #
+  # @see SecApi::Objects::Filing SEC filing metadata
+  # @see SecApi::Objects::Entity Company/issuer entity information
+  # @see SecApi::Objects::StreamFiling Real-time filing notification
+  # @see SecApi::Objects::XbrlData XBRL financial data
+  #
   module Objects
+    # Represents a company or issuer entity from SEC EDGAR.
+    #
+    # Entity objects are returned from mapping API calls and contain
+    # identifying information such as CIK, ticker, company name, and
+    # regulatory details. All instances are immutable (frozen).
+    #
+    # @example Entity from ticker resolution
+    #   entity = client.mapping.ticker("AAPL")
+    #   entity.cik      # => "0000320193"
+    #   entity.ticker   # => "AAPL"
+    #   entity.name     # => "Apple Inc."
+    #
+    # @example Entity from CIK resolution
+    #   entity = client.mapping.cik("320193")
+    #   entity.ticker   # => "AAPL"
+    #
+    # @see SecApi::Mapping Entity resolution API
+    #
     class Entity < Dry::Struct
       transform_keys { |key| key.to_s.underscore }
       transform_keys(&:to_sym)
@@ -26,6 +54,19 @@ module SecApi
         freeze
       end
 
+      # Creates an Entity from API response data.
+      #
+      # Normalizes camelCase keys from the API to snake_case and handles
+      # both symbol and string keys in the input hash.
+      #
+      # @param data [Hash] API response hash with entity data
+      # @return [Entity] Immutable entity object
+      #
+      # @example
+      #   data = { cik: "0000320193", companyName: "Apple Inc.", ticker: "AAPL" }
+      #   entity = Entity.from_api(data)
+      #   entity.name  # => "Apple Inc."
+      #
       def self.from_api(data)
         # Non-destructive normalization - create new hash instead of mutating input
         normalized = {

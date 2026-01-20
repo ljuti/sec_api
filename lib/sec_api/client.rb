@@ -2,9 +2,85 @@ require "faraday"
 require "faraday/retry"
 
 module SecApi
+  # Main entry point for interacting with the sec-api.io API.
+  #
+  # The Client manages HTTP connections, configuration, and provides access to
+  # specialized proxy objects for different API endpoints. It uses a Client-Proxy
+  # architecture where the Client handles connection lifecycle and configuration,
+  # while proxy objects handle domain-specific operations.
+  #
+  # @example Create a client with API key
+  #   client = SecApi::Client.new(api_key: "your_api_key")
+  #
+  # @example Create a client with full configuration
+  #   config = SecApi::Config.new(
+  #     api_key: "your_api_key",
+  #     base_url: "https://api.sec-api.io",
+  #     request_timeout: 60,
+  #     retry_max_attempts: 5,
+  #     default_logging: true,
+  #     logger: Rails.logger
+  #   )
+  #   client = SecApi::Client.new(config)
+  #
+  # @example Access different API endpoints via proxies
+  #   client.query      # => SecApi::Query (filing searches)
+  #   client.mapping    # => SecApi::Mapping (entity resolution)
+  #   client.extractor  # => SecApi::Extractor (document extraction)
+  #   client.xbrl       # => SecApi::Xbrl (XBRL data extraction)
+  #   client.stream     # => SecApi::Stream (real-time WebSocket)
+  #
+  # @example Monitor rate limit status
+  #   summary = client.rate_limit_summary
+  #   puts "Remaining: #{summary[:remaining]}/#{summary[:limit]}"
+  #   puts "Queued: #{summary[:queued_count]}"
+  #
+  # @note Client instances are thread-safe. All response objects are immutable
+  #   (using Dry::Struct) and can be safely shared between threads.
+  #
+  # @see SecApi::Config Configuration options
+  # @see SecApi::Query Fluent query builder
+  # @see SecApi::Mapping Entity resolution
+  # @see SecApi::Extractor Document extraction
+  # @see SecApi::Xbrl XBRL data extraction
+  # @see SecApi::Stream Real-time WebSocket streaming
+  #
   class Client
     include CallbackHelper
 
+    # Creates a new SEC API client.
+    #
+    # @param config [SecApi::Config, Hash] Configuration object or hash with config options.
+    #   If a Hash is provided, it's passed to Config.new. If omitted, uses environment
+    #   variables and defaults.
+    # @option config [String] :api_key SEC API key (required, or set SECAPI_API_KEY env var)
+    # @option config [String] :base_url Base API URL (default: "https://api.sec-api.io")
+    # @option config [Integer] :request_timeout Request timeout in seconds (default: 30)
+    # @option config [Integer] :retry_max_attempts Maximum retry attempts (default: 3)
+    # @option config [Boolean] :default_logging Enable default structured logging (default: false)
+    # @option config [Logger] :logger Logger instance for logging events
+    #
+    # @return [SecApi::Client] Configured client instance
+    #
+    # @raise [SecApi::ConfigurationError] when api_key is missing, a placeholder value,
+    #   or too short (< 10 characters)
+    #
+    # @example Create with API key only
+    #   client = SecApi::Client.new(api_key: "your_api_key")
+    #
+    # @example Create with environment variable
+    #   # Set SECAPI_API_KEY environment variable
+    #   client = SecApi::Client.new
+    #
+    # @example Create with full configuration
+    #   client = SecApi::Client.new(
+    #     api_key: "your_api_key",
+    #     request_timeout: 60,
+    #     retry_max_attempts: 5,
+    #     default_logging: true,
+    #     logger: Logger.new($stdout)
+    #   )
+    #
     def initialize(config = Config.new)
       @_config = config
       @_config.validate!
@@ -13,10 +89,35 @@ module SecApi
       @_rate_limit_tracker = RateLimitTracker.new
     end
 
+    # Returns the configuration object for this client.
+    #
+    # @return [SecApi::Config] The client's configuration
+    #
+    # @example Access configuration settings
+    #   client.config.api_key       # => "your_api_key"
+    #   client.config.base_url      # => "https://api.sec-api.io"
+    #   client.config.request_timeout  # => 30
+    #
     def config
       @_config
     end
 
+    # Returns the Faraday connection used for HTTP requests.
+    #
+    # The connection is lazily initialized on first access and includes the full
+    # middleware stack: JSON encoding/decoding, instrumentation, retry logic,
+    # rate limiting, and error handling.
+    #
+    # @return [Faraday::Connection] Configured Faraday connection
+    #
+    # @example Make a direct request (advanced usage)
+    #   response = client.connection.get("/mapping/ticker/AAPL")
+    #   puts response.body
+    #
+    # @note In most cases, use the proxy objects (query, mapping, etc.) instead
+    #   of making direct connection requests. The proxies provide type-safe
+    #   response handling and a cleaner API.
+    #
     def connection
       @_connection ||= build_connection
     end
@@ -36,10 +137,50 @@ module SecApi
       Query.new(self)
     end
 
+    # Returns the Extractor proxy for document extraction functionality.
+    #
+    # Provides access to the sec-api.io document extraction API for extracting
+    # text and specific sections from SEC filings.
+    #
+    # @return [SecApi::Extractor] Extractor proxy instance
+    #
+    # @example Extract full filing text
+    #   filing = client.query.ticker("AAPL").form_type("10-K").search.first
+    #   extracted = client.extractor.extract(filing.url)
+    #   puts extracted.text
+    #
+    # @example Extract specific sections
+    #   extracted = client.extractor.extract(filing.url, sections: [:risk_factors, :mda])
+    #   puts extracted.risk_factors
+    #   puts extracted.mda
+    #
+    # @see SecApi::Extractor
+    #
     def extractor
       @_extractor ||= Extractor.new(self)
     end
 
+    # Returns the Mapping proxy for entity resolution functionality.
+    #
+    # Provides access to the sec-api.io mapping API for resolving between
+    # different entity identifiers: ticker symbols, CIK numbers, CUSIP, and
+    # company names.
+    #
+    # @return [SecApi::Mapping] Mapping proxy instance
+    #
+    # @example Resolve ticker to company entity
+    #   entity = client.mapping.ticker("AAPL")
+    #   puts "CIK: #{entity.cik}, Name: #{entity.name}"
+    #
+    # @example Resolve CIK to ticker
+    #   entity = client.mapping.cik("320193")
+    #   puts "Ticker: #{entity.ticker}"
+    #
+    # @example Resolve CUSIP
+    #   entity = client.mapping.cusip("037833100")
+    #
+    # @see SecApi::Mapping
+    #
     def mapping
       @_mapping ||= Mapping.new(self)
     end
@@ -175,6 +316,21 @@ module SecApi
 
     private
 
+    # Middleware Stack Order (Architecture ADR-3: Critical Design Decision)
+    #
+    # Faraday middleware executes in REVERSE registration order for requests,
+    # and FORWARD order for responses. Our stack:
+    #
+    #   Request flow:  Instrumentation → Retry → RateLimiter → ErrorHandler → Adapter
+    #   Response flow: Adapter → ErrorHandler → RateLimiter → Retry → Instrumentation
+    #
+    # Why this order?
+    # 1. Instrumentation FIRST: Captures timing for all requests including retries
+    # 2. Retry BEFORE ErrorHandler: Can catch HTTP 429/5xx before they become exceptions
+    # 3. RateLimiter AFTER Retry: Sees final response headers (not intermediate retry responses)
+    # 4. ErrorHandler LAST: Converts HTTP errors to typed exceptions for caller
+    #
+    # Moving middleware out of order breaks the resilience guarantees!
     def build_connection
       Faraday.new(url: @_config.base_url) do |conn|
         # Set API key in Authorization header (redacted from Faraday logs automatically)

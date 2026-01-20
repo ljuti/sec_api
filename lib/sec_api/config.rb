@@ -3,10 +3,14 @@ require "anyway_config"
 module SecApi
   # Configuration for the SecApi client.
   #
-  # Supports configuration via:
-  # - Constructor arguments
-  # - YAML file (config/secapi.yml)
-  # - Environment variables (SECAPI_API_KEY, SECAPI_BASE_URL, etc.)
+  # Configuration Layering (via anyway_config):
+  # Sources are applied in order of increasing precedence:
+  # 1. Defaults (defined in initialize method)
+  # 2. YAML file (config/secapi.yml)
+  # 3. Environment variables (SECAPI_API_KEY, SECAPI_BASE_URL, etc.)
+  # Later sources override earlier ones - env vars always win.
+  # This allows production deployments to use env vars while keeping
+  # YAML for development defaults.
   #
   # @example Basic configuration
   #   config = SecApi::Config.new(api_key: "your_api_key")
@@ -481,38 +485,63 @@ module SecApi
       :default_logging,
       :metrics_backend
 
-    # Sensible defaults
+    # Default values with rationale for each setting.
+    # These defaults are chosen to balance reliability with responsiveness.
     def initialize(*)
       super
       self.base_url ||= "https://api.sec-api.io"
+
+      # Retry defaults (NFR5: 95%+ automatic recovery from transient failures)
+      # 5 attempts: Empirically provides >95% recovery for typical transient issues.
+      # Formula: P(all_fail) = 0.1^5 = 0.00001 (assuming 10% failure rate per attempt)
       self.retry_max_attempts ||= 5
+      # 1 second initial delay: Fast enough to feel responsive, slow enough to allow
+      # transient issues (network blips, brief overloads) to resolve.
       self.retry_initial_delay ||= 1.0
+      # 60 second max delay: Acceptable for backfill/batch operations, prevents
+      # excessive delays for interactive use cases.
       self.retry_max_delay ||= 60.0
+      # Factor 2: Standard exponential backoff (1s, 2s, 4s, 8s, 16s, 32s, 60s).
+      # Doubles each attempt, providing geometric spacing per industry convention.
       self.retry_backoff_factor ||= 2
       self.request_timeout ||= 30
+
+      # Rate limiting defaults (FR5: proactive throttling)
+      # 10% threshold: Safety buffer to avoid 429 responses. At 100 req/min limit,
+      # this gives ~10 requests buffer. Lower risks 429s; higher wastes capacity.
       self.rate_limit_threshold ||= 0.1
       self.queue_wait_warning_threshold ||= 300  # 5 minutes
       self.log_level ||= :info
+
       # Stream reconnection defaults (Story 6.4)
       self.stream_max_reconnect_attempts ||= 10
       self.stream_initial_reconnect_delay ||= 1.0
       self.stream_max_reconnect_delay ||= 60.0
       self.stream_backoff_multiplier ||= 2
-      # Stream latency defaults (Story 6.5)
+      # Stream latency defaults (Story 6.5 / NFR1: <2 minute delivery)
       self.stream_latency_warning_threshold ||= 120.0
       # Structured logging defaults (Story 7.3)
       self.default_logging = false if default_logging.nil?
     end
 
-    # Validation called by Client
+    # Validates configuration and raises ConfigurationError for invalid values.
+    # Called automatically during Client initialization.
+    #
+    # Validation philosophy: Fail fast with actionable error messages.
+    # Invalid config should never reach the API - catch it at startup.
     #
     # @raise [ConfigurationError] if any configuration value is invalid
     # @return [void]
     def validate!
+      # API key validation: Reject nil, empty, and obviously invalid keys.
+      # Why check length < 10? Real sec-api.io keys are ~40 chars. Short strings
+      # are likely test values or typos that would cause confusing 401 errors.
       if api_key.nil? || api_key.empty?
         raise ConfigurationError, missing_api_key_message
       end
 
+      # Reject placeholder values that users copy from documentation.
+      # Better to fail here with clear message than get cryptic 401 from API.
       if api_key.include?("your_api_key_here") || api_key.length < 10
         raise ConfigurationError, invalid_api_key_message
       end

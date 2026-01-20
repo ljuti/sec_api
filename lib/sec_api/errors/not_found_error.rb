@@ -3,6 +3,10 @@
 module SecApi
   # Raised when a requested resource is not found (404 Not Found).
   #
+  # Why PermanentError? The resource genuinely doesn't exist - invalid ticker,
+  # nonexistent CIK, or filing not in database. Retrying won't create it.
+  # User needs to fix their query parameters or check that the resource exists.
+  #
   # This is a permanent error - the requested ticker, CIK, or filing does not exist.
   # Retrying won't help; the query parameters need to be corrected.
   #

@@ -1,14 +1,76 @@
 module SecApi
+  # XBRL extraction proxy for converting SEC EDGAR XBRL filings to structured JSON.
+  #
+  # Extraction Workflow:
+  # 1. Client calls to_json() with URL, accession_no, or Filing object
+  # 2. Input is validated locally (URL format, accession format)
+  # 3. Request sent to sec-api.io XBRL-to-JSON endpoint
+  # 4. Response validated heuristically (has statements? valid structure?)
+  # 5. Data wrapped in immutable XbrlData Dry::Struct object
+  #
+  # Validation Philosophy (Architecture ADR-5):
+  # We use HEURISTIC validation (check structure, required sections) rather than
+  # full XBRL schema validation. Rationale:
+  # - sec-api.io handles taxonomy parsing - we trust their output structure
+  # - Full schema validation would require bundling 100MB+ taxonomy files
+  # - We validate what matters: required sections present, data types coercible
+  # - Catch malformed responses early with actionable error messages
+  #
+  # Provides access to the sec-api.io XBRL-to-JSON API, which extracts financial
+  # statement data from XBRL filings and returns structured, typed data objects.
+  # Supports both US GAAP and IFRS taxonomies.
+  #
+  # @example Extract XBRL data from a filing URL
+  #   client = SecApi::Client.new(api_key: "your_api_key")
+  #   xbrl = client.xbrl.to_json("https://www.sec.gov/Archives/edgar/data/320193/000032019323000106/aapl-20230930.htm")
+  #
+  #   # Access income statement data
+  #   revenue = xbrl.statements_of_income["RevenueFromContractWithCustomerExcludingAssessedTax"]
+  #   revenue.first.to_numeric  # => 394328000000.0
+  #
+  # @example Extract using accession number
+  #   xbrl = client.xbrl.to_json(accession_no: "0000320193-23-000106")
+  #
+  # @example Extract from Filing object
+  #   filing = client.query.ticker("AAPL").form_type("10-K").search.first
+  #   xbrl = client.xbrl.to_json(filing)
+  #
+  # @example Discover available XBRL elements
+  #   xbrl.element_names  # => ["Assets", "CashAndCashEquivalents", "Revenue", ...]
+  #   xbrl.taxonomy_hint  # => :us_gaap or :ifrs
+  #
+  # @note The gem returns element names exactly as provided by sec-api.io without
+  #   normalizing between US GAAP and IFRS taxonomies. Use {XbrlData#element_names}
+  #   to discover available elements in any filing.
+  #
+  # @see SecApi::XbrlData The immutable value object returned by {#to_json}
+  # @see SecApi::Fact Individual financial facts with periods and values
+  #
   class Xbrl
-    # SEC URL pattern for validation
+    # Pattern for validating SEC EDGAR URLs.
+    # @return [Regexp] regex pattern matching sec.gov domains
     SEC_URL_PATTERN = %r{\Ahttps?://(?:www\.)?sec\.gov/}i
 
-    # Accession number formats:
-    # - Dashed: 0000320193-23-000106 (10-2-6 digits)
-    # - Undashed: 0000320193230001060 (18 digits)
+    # Pattern for dashed accession number format (10-2-6 digits).
+    # @return [Regexp] regex pattern for format like "0000320193-23-000106"
+    # @example
+    #   "0000320193-23-000106".match?(ACCESSION_DASHED_PATTERN) # => true
     ACCESSION_DASHED_PATTERN = /\A\d{10}-\d{2}-\d{6}\z/
+
+    # Pattern for undashed accession number format (18 consecutive digits).
+    # @return [Regexp] regex pattern for format like "0000320193230001060"
+    # @example
+    #   "0000320193230001060".match?(ACCESSION_UNDASHED_PATTERN) # => true
     ACCESSION_UNDASHED_PATTERN = /\A\d{18}\z/
 
+    # Creates a new XBRL extraction proxy instance.
+    #
+    # XBRL instances are obtained via {Client#xbrl} and cached
+    # for reuse. Direct instantiation is not recommended.
+    #
+    # @param client [SecApi::Client] The parent client for API access
+    # @return [SecApi::Xbrl] A new XBRL proxy instance
+    # @api private
     def initialize(client)
       @_client = client
     end
@@ -55,12 +117,18 @@ module SecApi
 
       response = @_client.connection.get("/xbrl-to-json", request_params)
 
-      # Return XbrlData object instead of raw hash
+      # Return XbrlData object instead of raw hash.
+      # XbrlData.from_api performs heuristic validation:
+      # - Checks at least one statement section exists
+      # - Dry::Struct validates type coercion (string/numeric values)
+      # - Fact objects validate period and value structure
       # Error handling delegated to middleware (Story 1.2)
       begin
         XbrlData.from_api(response.body)
       rescue Dry::Struct::Error, NoMethodError, TypeError => e
-        # Provide actionable context when XBRL data structure validation fails
+        # Heuristic validation failed - data structure doesn't match expected format.
+        # This catches issues like missing required fields, wrong types, or malformed
+        # fact arrays. Provide actionable context for debugging.
         accession = request_params[:"accession-no"] || "unknown"
         raise ValidationError,
           "XBRL data validation failed for filing #{accession}: #{e.message}. " \

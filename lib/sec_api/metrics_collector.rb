@@ -72,27 +72,56 @@ module SecApi
   module MetricsCollector
     extend self
 
-    # Standard metric names for requests
+    # Metric name for total requests made (counter).
+    # @return [String] metric name
     REQUESTS_TOTAL = "sec_api.requests.total"
+
+    # Metric name for successful requests (counter, status < 400).
+    # @return [String] metric name
     REQUESTS_SUCCESS = "sec_api.requests.success"
+
+    # Metric name for error requests (counter, status >= 400).
+    # @return [String] metric name
     REQUESTS_ERROR = "sec_api.requests.error"
+
+    # Metric name for request duration (histogram, milliseconds).
+    # @return [String] metric name
     REQUESTS_DURATION = "sec_api.requests.duration_ms"
 
-    # Standard metric names for retries
+    # Metric name for retry attempts (counter).
+    # @return [String] metric name
     RETRIES_TOTAL = "sec_api.retries.total"
+
+    # Metric name for exhausted retries (counter).
+    # @return [String] metric name
     RETRIES_EXHAUSTED = "sec_api.retries.exhausted"
 
-    # Standard metric names for rate limiting
+    # Metric name for rate limit hits (counter, 429 responses).
+    # @return [String] metric name
     RATE_LIMIT_HIT = "sec_api.rate_limit.hit"
+
+    # Metric name for proactive throttling events (counter).
+    # @return [String] metric name
     RATE_LIMIT_THROTTLE = "sec_api.rate_limit.throttle"
 
-    # Standard metric names for streaming
+    # Metric name for streaming filings received (counter).
+    # @return [String] metric name
     STREAM_FILINGS = "sec_api.stream.filings"
+
+    # Metric name for streaming delivery latency (histogram, milliseconds).
+    # @return [String] metric name
     STREAM_LATENCY = "sec_api.stream.latency_ms"
+
+    # Metric name for stream reconnection events (counter).
+    # @return [String] metric name
     STREAM_RECONNECTS = "sec_api.stream.reconnects"
 
-    # Standard metric names for filing journey tracking
+    # Metric name for filing journey stage duration (histogram, milliseconds).
+    # @return [String] metric name
     JOURNEY_STAGE_DURATION = "sec_api.filing.journey.stage_ms"
+
+    # Metric name for total filing journey duration (histogram, milliseconds).
+    # @return [String] metric name
     JOURNEY_TOTAL_DURATION = "sec_api.filing.journey.total_ms"
 
     # Records a successful or failed response.

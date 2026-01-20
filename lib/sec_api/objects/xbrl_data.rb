@@ -5,6 +5,21 @@ require "dry-struct"
 module SecApi
   # Immutable value object representing XBRL financial data extracted from SEC filings.
   #
+  # Heuristic Validation Strategy (Architecture ADR-5):
+  # Rather than validating against full XBRL taxonomies (US GAAP, IFRS), we use
+  # heuristic checks that verify data integrity without bundling 100MB+ schema files:
+  #
+  # 1. Structure validation: At least one statement section must be present
+  # 2. Type validation: Dry::Struct enforces correct types via coercion
+  # 3. Fact validation: Each Fact object validates period and value structure
+  # 4. Deep freeze: Immutability enforced at construction time
+  #
+  # Why not full schema validation?
+  # - sec-api.io already validates against taxonomies - we trust their parsing
+  # - Schema files are huge and change with each taxonomy release
+  # - Our heuristics catch the failures that matter: malformed responses, missing data
+  # - Full validation would add latency and complexity without practical benefit
+  #
   # This class uses Dry::Struct for type safety and immutability, ensuring thread-safe
   # access to financial data. All nested structures are deeply frozen to prevent modification.
   #
@@ -290,6 +305,12 @@ module SecApi
     end
 
     # Validates that at least one financial statement section is present.
+    #
+    # This is the core heuristic validation check. Rationale:
+    # - Valid XBRL filings always have at least one statement section
+    # - Empty responses indicate filing doesn't have XBRL data (older filings)
+    # - Malformed responses from API errors will also fail this check
+    # - We don't validate specific element names - those vary by taxonomy
     #
     # @param statements_of_income [Hash, nil] Parsed income statement
     # @param balance_sheets [Hash, nil] Parsed balance sheet

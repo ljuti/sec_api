@@ -82,7 +82,9 @@ module SecApi
         # Generate request_id if not already set (allows upstream middleware to set it)
         env[:request_id] ||= SecureRandom.uuid
 
-        # Capture start time using monotonic clock for accurate duration
+        # Capture start time using monotonic clock for accurate duration.
+        # Why monotonic? Time.now can jump backward (NTP sync, DST) causing negative durations.
+        # CLOCK_MONOTONIC is guaranteed to increase, essential for accurate latency metrics.
         start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
         # Invoke on_request callback BEFORE request is sent

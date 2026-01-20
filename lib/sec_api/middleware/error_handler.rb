@@ -3,6 +3,16 @@
 require "faraday"
 
 module SecApi
+  # Faraday middleware for SEC API operations.
+  #
+  # These middleware classes handle common concerns like error handling,
+  # rate limiting, and instrumentation. They are automatically configured
+  # in the Client's Faraday connection.
+  #
+  # @see SecApi::Middleware::ErrorHandler HTTP error to exception conversion
+  # @see SecApi::Middleware::RateLimiter Rate limit tracking and throttling
+  # @see SecApi::Middleware::Instrumentation Request/response instrumentation
+  #
   module Middleware
     # Faraday middleware that converts HTTP status codes and Faraday exceptions
     # into typed SecApi exceptions.
@@ -38,6 +48,17 @@ module SecApi
         @config = options[:config]
       end
 
+      # Processes the request and converts HTTP errors to typed exceptions.
+      #
+      # @param env [Faraday::Env] The request/response environment
+      # @return [Faraday::Response] The response (if no error)
+      # @raise [ValidationError] when API returns 400 or 422
+      # @raise [AuthenticationError] when API returns 401 or 403
+      # @raise [NotFoundError] when API returns 404
+      # @raise [RateLimitError] when API returns 429
+      # @raise [ServerError] when API returns 5xx
+      # @raise [NetworkError] when network issues occur
+      #
       def call(env)
         response = @app.call(env)
         handle_response(response.env)
@@ -94,18 +115,27 @@ module SecApi
 
       # Builds the appropriate error for the HTTP status code.
       #
+      # Error Taxonomy Decision (Architecture ADR-2):
+      # - TransientError (retryable): Network issues, server errors, rate limits - worth retrying
+      #   because the underlying issue may resolve. Supports NFR5: 95%+ automatic recovery.
+      # - PermanentError (fail-fast): Client errors like auth, validation, not found - no point
+      #   retrying because the same request will always fail. Fail immediately to save resources.
+      #
       # @param env [Faraday::Env] The response environment
       # @return [SecApi::Error, nil] The appropriate error, or nil for unhandled status
       def build_error_for_status(env)
         request_id = env[:request_id]
 
         case env[:status]
+        # 400/422: PermanentError - Client sent invalid data. Retrying won't help.
         when 400
           ValidationError.new(
             "Bad request (400): The request was malformed or contains invalid parameters. " \
             "Check your query parameters, ticker symbols, or search criteria.",
             request_id: request_id
           )
+        # 401/403: PermanentError - Auth issues need human intervention (fix API key or subscription).
+        # Both map to AuthenticationError because the resolution is the same: fix credentials.
         when 401
           AuthenticationError.new(
             "API authentication failed (401 Unauthorized). " \
@@ -119,6 +149,7 @@ module SecApi
             "Verify your subscription plan at https://sec-api.io or contact support.",
             request_id: request_id
           )
+        # 404: PermanentError - Resource doesn't exist. Retrying won't create it.
         when 404
           NotFoundError.new(
             "Resource not found (404): #{env[:url]&.path || "unknown"}. " \
@@ -131,6 +162,8 @@ module SecApi
             "This may indicate invalid query logic or unsupported parameter combinations.",
             request_id: request_id
           )
+        # 429: TransientError - Rate limit will reset. Worth waiting and retrying automatically.
+        # Supports FR5.4: "automatically resume when capacity returns"
         when 429
           retry_after = parse_retry_after(env[:response_headers])
           reset_at = parse_reset_timestamp(env[:response_headers])
@@ -141,6 +174,8 @@ module SecApi
             reset_at: reset_at,
             request_id: request_id
           )
+        # 5xx: TransientError - Server issues are typically temporary. Retry with backoff.
+        # Supports NFR5: 95%+ automatic recovery from transient failures.
         when 500..504
           ServerError.new(
             "sec-api.io server error (#{env[:status]}). " \

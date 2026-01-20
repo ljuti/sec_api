@@ -3,6 +3,11 @@
 module SecApi
   # Raised when sec-api.io returns a server error (5xx status code).
   #
+  # Why TransientError? Server errors (500, 502, 503, 504) typically indicate
+  # temporary infrastructure issues - service restart, brief overload, upstream
+  # timeout. The request is valid; the server is temporarily unhealthy. Worth
+  # retrying with exponential backoff.
+  #
   # This is a transient error - the retry middleware will automatically
   # retry the request. Server errors typically indicate temporary issues
   # with the sec-api.io infrastructure.

@@ -7,6 +7,15 @@ require "json"
 module SecApi
   # WebSocket streaming proxy for real-time SEC filing notifications.
   #
+  # Connection Management Design (Architecture ADR-7):
+  # - Auto-reconnect: Network issues shouldn't require user intervention. Exponential
+  #   backoff with jitter prevents thundering herd on server recovery.
+  # - Callback isolation: User callback exceptions mustn't crash the stream. We catch,
+  #   log, and continue - the stream is more valuable than any single callback.
+  # - Best-effort delivery: Filings during disconnection are lost. Users must backfill
+  #   via Query API if guaranteed delivery is required. This tradeoff keeps the stream
+  #   simple and avoids complex replay/dedup logic.
+  #
   # Connects to sec-api.io's Stream API via WebSocket and delivers
   # filing notifications as they're published to the SEC EDGAR system.
   #
@@ -91,10 +100,22 @@ module SecApi
   #   # )
   #
   class Stream
-    # WebSocket close codes
+    # WebSocket close code for normal closure (client or server initiated clean close).
+    # @return [Integer] WebSocket close code 1000
     CLOSE_NORMAL = 1000
+
+    # WebSocket close code when endpoint is going away (server shutdown/restart).
+    # @return [Integer] WebSocket close code 1001
     CLOSE_GOING_AWAY = 1001
+
+    # WebSocket close code for abnormal closure (connection lost unexpectedly).
+    # Triggers automatic reconnection when {Config#stream_max_reconnect_attempts} > 0.
+    # @return [Integer] WebSocket close code 1006
     CLOSE_ABNORMAL = 1006
+
+    # WebSocket close code for policy violation (authentication failure).
+    # Raised as {SecApi::AuthenticationError} - does not trigger reconnection.
+    # @return [Integer] WebSocket close code 1008
     CLOSE_POLICY_VIOLATION = 1008
 
     # @return [SecApi::Client] The parent client instance
@@ -733,8 +754,14 @@ module SecApi
     # Calculates delay before next reconnection attempt using exponential backoff.
     #
     # Formula: min(initial * (multiplier ^ attempt), max_delay) * jitter
-    # Jitter adds +-10% randomness to prevent thundering herd when multiple
-    # clients reconnect simultaneously.
+    #
+    # Why exponential backoff? Gives the server time to recover. If it's overloaded,
+    # we don't want to hammer it with immediate reconnects. Each failure suggests
+    # we should wait longer before trying again.
+    #
+    # Why jitter? When a server restarts, all clients reconnect simultaneously,
+    # potentially overwhelming the server again (thundering herd). Random jitter
+    # spreads out the reconnection attempts over time.
     #
     # @return [Float] Delay in seconds before next attempt
     # @api private

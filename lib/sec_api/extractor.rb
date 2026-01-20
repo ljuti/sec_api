@@ -27,6 +27,14 @@ module SecApi
       market_risk: "7A"
     }.freeze
 
+    # Creates a new Extractor proxy instance.
+    #
+    # Extractor instances are obtained via {Client#extractor} and cached
+    # for reuse. Direct instantiation is not recommended.
+    #
+    # @param client [SecApi::Client] The parent client for API access
+    # @return [SecApi::Extractor] A new extractor proxy instance
+    # @api private
     def initialize(client)
       @_client = client
     end

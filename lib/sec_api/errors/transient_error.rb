@@ -3,6 +3,13 @@
 module SecApi
   # Base class for all retryable (transient) errors.
   #
+  # Design rationale: TransientError signals the retry middleware that this failure is worth
+  # retrying because the underlying issue may resolve (network blip, brief overload, rate limit
+  # window reset). This supports NFR5 (95%+ automatic recovery from transient failures).
+  #
+  # Retry behavior: The retry middleware uses `error.is_a?(TransientError)` to decide
+  # retry eligibility. Subclasses inherit retry eligibility automatically.
+  #
   # Transient errors represent temporary failures that may succeed if retried,
   # such as network timeouts, rate limiting, or temporary server issues.
   # The retry middleware automatically retries operations that raise TransientError.

@@ -4,6 +4,13 @@ module SecApi
   module Collections
     # A collection of SEC filings with Enumerable support and pagination.
     #
+    # Pagination Design (Architecture ADR-6):
+    # Uses cursor-based pagination via "from" offset rather than page numbers.
+    # Why cursor-based? More efficient for large datasets - the server doesn't need
+    # to calculate page boundaries, and the client can stop early without fetching
+    # unnecessary data. Supports both manual (fetch_next_page) and automatic
+    # (auto_paginate) iteration patterns.
+    #
     # Filings collections are returned from query operations and support
     # iteration, pagination metadata, total count from API response, and
     # fetching subsequent pages of results.
@@ -130,12 +137,20 @@ module SecApi
 
       # Returns a lazy enumerator that automatically paginates through all results.
       #
-      # Each iteration yields a single {Filing} object. Pages are fetched on-demand
+      # Memory Efficiency Design:
+      # Why Enumerator::Lazy? For backfill operations with 100k+ results, we can't
+      # load all filings into memory. Lazy enumeration fetches pages on-demand:
+      # - Only current page in memory (~50 filings)
+      # - Previous pages become GC-eligible as we iterate
+      # - Early termination via .take(N) avoids fetching unnecessary pages
+      # - Enumerable chaining (.select, .map) works naturally
+      #
+      # Each iteration yields a single {SecApi::Objects::Filing} object. Pages are fetched on-demand
       # as the enumerator is consumed, keeping memory usage constant regardless of
       # total result count. Only the current page is held in memory; previous pages
       # become eligible for garbage collection as iteration proceeds.
       #
-      # @return [Enumerator::Lazy] lazy enumerator yielding Filing objects
+      # @return [Enumerator::Lazy] lazy enumerator yielding {SecApi::Objects::Filing} objects
       # @raise [PaginationError] when no client reference available for pagination
       #
       # @example Backfill with early termination

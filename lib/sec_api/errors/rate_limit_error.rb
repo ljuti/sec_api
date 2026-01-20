@@ -3,6 +3,10 @@
 module SecApi
   # Raised when sec-api.io rate limit is exceeded (429 Too Many Requests).
   #
+  # Why TransientError? Rate limits reset after a time window (typically 60s).
+  # The request is valid - we just hit a temporary capacity limit. Worth waiting
+  # and retrying automatically rather than failing to the user. (FR5.4: auto-resume)
+  #
   # This is a transient error - the retry middleware will automatically
   # retry the request after waiting for the rate limit to reset.
   #
