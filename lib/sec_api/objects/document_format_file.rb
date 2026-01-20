@@ -39,8 +39,11 @@ module SecApi
         data[:url] = data.delete(:documentUrl) if data.key?(:documentUrl)
 
         # API sometimes returns whitespace for size - normalize to nil
-        if data[:size].is_a?(String) && data[:size].strip.empty?
+        # Check both symbol and string keys since API data may use either
+        size_val = data[:size] || data["size"]
+        if size_val.is_a?(String) && size_val.strip.empty?
           data[:size] = nil
+          data.delete("size")
         end
 
         new(data)
