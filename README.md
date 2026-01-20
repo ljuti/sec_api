@@ -1,38 +1,30 @@
 # sec_api
 
 [![Gem Version](https://badge.fury.io/rb/sec_api.svg)](https://badge.fury.io/rb/sec_api)
+[![CI](https://github.com/ljuti/sec_api/actions/workflows/main.yml/badge.svg)](https://github.com/ljuti/sec_api/actions/workflows/main.yml)
 [![Ruby](https://img.shields.io/badge/ruby-3.1%2B-ruby.svg)](https://www.ruby-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.txt)
+[![Documentation](https://img.shields.io/badge/docs-YARD-blue.svg)](https://rubydoc.info/gems/sec_api)
 
 Production-grade Ruby client for accessing SEC EDGAR filings through the [sec-api.io](https://sec-api.io) API. Query, search, and extract structured financial data from 18+ million SEC filings with automatic retry, rate limiting, and comprehensive error handling.
 
 ## Features
 
-### Current (v0.1.0)
-
-- **Query SEC Filings** - Search by ticker, CIK, form type, and date range
-- **Entity Mapping** - Resolve tickers, CIKs, CUSIPs, and company names
-- **XBRL Extraction** - Extract structured financial data from filings
-- **Type-Safe Responses** - Immutable value objects with Dry::Struct
-- **Flexible Configuration** - YAML files and environment variables
-
-### Coming in v1.0.0 🚧
-
-- **Production-Grade Error Handling** - TransientError/PermanentError hierarchy with automatic retry
-- **Fluent Query Builder** - ActiveRecord-style chainable query DSL
-- **Automatic Pagination** - Memory-efficient iteration over large result sets
-- **Real-Time Streaming** - WebSocket notifications for new filings (<2 min latency)
-- **Intelligent Rate Limiting** - Proactive throttling and request queueing
-- **XBRL Validation** - Heuristic validation for US GAAP and IFRS taxonomies
-- **Observability Hooks** - Production monitoring with structured logging and metrics
-- **Comprehensive Documentation** - 100% YARD coverage with usage examples
+- **Query Builder DSL** - Fluent, chainable interface for searching filings by ticker, CIK, form type, date range, and full-text keywords
+- **Automatic Pagination** - Memory-efficient lazy enumeration through large result sets with `auto_paginate`
+- **Entity Mapping** - Resolve tickers, CIKs, CUSIPs, and company names to entity records
+- **XBRL Extraction** - Extract structured financial data from US GAAP and IFRS filings
+- **Real-Time Streaming** - WebSocket notifications for new filings with <2 minute latency
+- **Intelligent Rate Limiting** - Proactive throttling and request queueing to maximize throughput
+- **Production Error Handling** - TransientError/PermanentError hierarchy with automatic retry
+- **Observability Hooks** - Instrumentation callbacks for logging, metrics, and distributed tracing
 
 ## Installation
 
-Add to your application's Gemfile:
+Add to your Gemfile:
 
-```bash
-bundle add sec_api
+```ruby
+gem 'sec_api'
 ```
 
 Or install directly:
@@ -43,21 +35,9 @@ gem install sec_api
 
 ## Quick Start
 
-### 1. Configuration
+### Configuration
 
-**Option A: YAML Configuration**
-
-Create `config/secapi.yml`:
-
-```yaml
-api_key: your_api_key_here
-base_url: https://api.sec-api.io  # optional, defaults to production
-retry_max_attempts: 5              # optional
-retry_initial_delay: 1.0           # optional (seconds)
-retry_max_delay: 60.0              # optional (seconds)
-```
-
-**Option B: Environment Variables**
+Set your API key via environment variable:
 
 ```bash
 export SECAPI_API_KEY=your_api_key_here
@@ -65,7 +45,13 @@ export SECAPI_API_KEY=your_api_key_here
 
 Get your API key from [sec-api.io](https://sec-api.io).
 
-### 2. Basic Usage
+Alternatively, create `config/secapi.yml`:
+
+```yaml
+api_key: <%= ENV['SECAPI_API_KEY'] %>
+```
+
+### Basic Usage
 
 ```ruby
 require 'sec_api'
@@ -74,23 +60,15 @@ require 'sec_api'
 client = SecApi::Client.new
 
 # Query filings by ticker
-filings = client.query.ticker("AAPL").search
+filings = client.query.ticker("AAPL").form_type("10-K").search
 filings.each do |filing|
   puts "#{filing.form_type} filed on #{filing.filed_at}"
 end
-
-# Resolve ticker to CIK
-entity = client.mapping.ticker("AAPL")
-puts "CIK: #{entity.cik}, Name: #{entity.name}"
-
-# Extract XBRL financial data
-xbrl_data = client.xbrl.to_json(filing_url)
-puts "Revenue: #{xbrl_data.financials.revenue}"
 ```
 
 ## Usage Examples
 
-### Query Builder (Coming in v1.0.0)
+### Query Builder
 
 ```ruby
 # Simple ticker query
@@ -99,12 +77,12 @@ filings = client.query
   .form_type("10-K")
   .search
 
-# Date range and multiple form types
+# Multiple tickers and form types with date range
 filings = client.query
-  .ticker("TSLA")
-  .form_type("10-K", "10-Q")
-  .date_range(from: "2020-01-01", to: "2023-12-31")
-  .limit(50)
+  .ticker("AAPL", "TSLA", "GOOGL")
+  .form_type("10-K", "10-Q", "8-K")
+  .date_range(from: "2020-01-01", to: Date.today)
+  .limit(100)
   .search
 
 # Full-text search
@@ -114,20 +92,17 @@ filings = client.query
   .search
 ```
 
-### Automatic Pagination (Coming in v1.0.0)
+### Automatic Pagination
 
 ```ruby
-# First page only (default)
-filings = client.query.ticker("AAPL").search
-puts "First page: #{filings.count} filings"
-
 # Manual pagination
+filings = client.query.ticker("AAPL").search
 next_page = filings.fetch_next_page if filings.has_more?
 
-# Automatic pagination for backfills
+# Automatic pagination for backfills (memory-efficient)
 client.query
   .ticker("AAPL")
-  .date_range(from: 5.years.ago, to: Date.today)
+  .date_range(from: "2015-01-01", to: Date.today)
   .auto_paginate
   .each do |filing|
     # Process thousands of filings with constant memory usage
@@ -138,57 +113,46 @@ client.query
 ### Entity Mapping
 
 ```ruby
-# Ticker to CIK
+# Ticker to entity
 entity = client.mapping.ticker("AAPL")
-# => #<SecApi::Entity cik="0000320193" ticker="AAPL" name="Apple Inc.">
+puts "CIK: #{entity.cik}, Name: #{entity.name}"
 
-# CIK to ticker
+# CIK to entity
 entity = client.mapping.cik("0000320193")
 
 # CUSIP lookup
 entity = client.mapping.cusip("037833100")
-
-# Company name search
-entity = client.mapping.name("Apple Inc.")
 ```
 
 ### XBRL Data Extraction
 
 ```ruby
-# Extract complete XBRL data
-xbrl_data = client.xbrl.to_json(filing_url)
+# Extract XBRL data from a filing
+xbrl_data = client.xbrl.to_json(filing.xbrl_url)
 
-# Access financial metrics
-puts xbrl_data.financials.revenue
-puts xbrl_data.financials.assets
-puts xbrl_data.financials.liabilities
-puts xbrl_data.financials.equity
+# Access financial data by US GAAP element names
+revenue = xbrl_data.statements_of_income["RevenueFromContractWithCustomerExcludingAssessedTax"]
+assets = xbrl_data.balance_sheets["Assets"]
 
-# Check validation results (v1.0.0)
-if xbrl_data.validation_results.passed?
-  puts "Data validated successfully"
-end
+# Discover available elements
+xbrl_data.element_names  # => ["Assets", "Revenue", ...]
+xbrl_data.taxonomy_hint  # => :us_gaap or :ifrs
 ```
 
-### Real-Time Filing Notifications (Coming in v1.0.0)
+### Real-Time Streaming
 
 ```ruby
-# Subscribe to all filings
-client.stream.subscribe do |filing|
-  puts "New filing: #{filing.ticker} - #{filing.form_type}"
-  # Process immediately or enqueue background job
-end
-
-# Filter by ticker and form type
+# Subscribe to filtered filings
 client.stream.subscribe(
   tickers: ["AAPL", "TSLA"],
   form_types: ["10-K", "8-K"]
 ) do |filing|
-  ProcessFilingJob.perform_later(filing.accession_no)
+  puts "New filing: #{filing.ticker} - #{filing.form_type}"
+  ProcessFilingJob.perform_async(filing.accession_no)
 end
 ```
 
-### Error Handling (v1.0.0)
+### Error Handling
 
 ```ruby
 begin
@@ -196,7 +160,7 @@ begin
 rescue SecApi::RateLimitError => e
   # Automatically retried with exponential backoff
   # Only raised after max retries exhausted
-  puts "Rate limited: #{e.message}"
+  puts "Rate limited: retry after #{e.retry_after}s"
 rescue SecApi::AuthenticationError => e
   # Permanent error - fix API key
   puts "Auth failed: #{e.message}"
@@ -209,39 +173,47 @@ rescue SecApi::PermanentError => e
 end
 ```
 
-### Observability (Coming in v1.0.0)
+### Observability
 
 ```ruby
 # Configure instrumentation callbacks
-SecApi::Config.configure do |config|
-  config.on_request = ->(env) {
-    logger.info("API Request", request_id: env.request_id, url: env.url)
-  }
+config = SecApi::Config.new(
+  api_key: ENV.fetch("SECAPI_API_KEY"),
 
-  config.on_response = ->(env) {
-    StatsD.timing("sec_api.request.duration", env.duration_ms)
-  }
+  on_request: ->(request_id:, method:, url:, headers:) {
+    Rails.logger.info("SEC API Request", request_id: request_id, url: url)
+  },
 
-  config.on_retry = ->(env) {
-    logger.warn("Retry attempt", request_id: env.request_id, attempt: env.retry_count)
-  }
+  on_response: ->(request_id:, status:, duration_ms:, url:, method:) {
+    StatsD.histogram("sec_api.request.duration_ms", duration_ms)
+  },
 
-  config.on_rate_limit = ->(state) {
-    logger.warn("Rate limit", remaining: state.remaining, reset_at: state.reset_at)
+  on_error: ->(request_id:, error:, url:, method:) {
+    Bugsnag.notify(error)
   }
-end
+)
+
+client = SecApi::Client.new(config)
+
+# Or use automatic structured logging
+client = SecApi::Client.new(
+  api_key: ENV.fetch("SECAPI_API_KEY"),
+  logger: Rails.logger,
+  default_logging: true
+)
 ```
 
 ## Architecture
 
-### Client → Proxy Pattern
+### Client Proxy Pattern
 
 ```ruby
 SecApi::Client
-├── .query      # Query API proxy
+├── .query      # Query API proxy (fluent search builder)
 ├── .mapping    # Mapping API proxy (ticker/CIK resolution)
-├── .extractor  # Extractor API proxy
-└── .xbrl       # XBRL API proxy (financial data)
+├── .extractor  # Extractor API proxy (document extraction)
+├── .xbrl       # XBRL API proxy (financial data)
+└── .stream     # Stream API proxy (WebSocket notifications)
 ```
 
 ### Exception Hierarchy
@@ -249,17 +221,17 @@ SecApi::Client
 ```
 SecApi::Error (base)
 ├── TransientError (automatic retry)
-│   ├── RateLimitError
+│   ├── RateLimitError (429)
 │   ├── ServerError (5xx)
 │   └── NetworkError
 └── PermanentError (fail immediately)
-    ├── AuthenticationError (401)
+    ├── AuthenticationError (401/403)
     ├── NotFoundError (404)
-    ├── ValidationError
+    ├── ValidationError (400/422)
     └── ConfigurationError
 ```
 
-### Middleware Stack (v1.0.0)
+### Middleware Stack
 
 ```
 Request → Instrumentation → Retry → RateLimiter → ErrorHandler → Adapter → sec-api.io
@@ -269,16 +241,17 @@ Request → Instrumentation → Retry → RateLimiter → ErrorHandler → Adapt
 
 All options can be set via YAML or environment variables:
 
-| Option | YAML Key | Env Variable | Default | Description |
-|--------|----------|--------------|---------|-------------|
-| API Key | `api_key` | `SECAPI_API_KEY` | _(required)_ | Your sec-api.io API key |
-| Base URL | `base_url` | `SECAPI_BASE_URL` | `https://api.sec-api.io` | API base URL |
-| Max Retries | `retry_max_attempts` | `SECAPI_RETRY_MAX_ATTEMPTS` | `5` | Maximum retry attempts |
-| Initial Delay | `retry_initial_delay` | `SECAPI_RETRY_INITIAL_DELAY` | `1.0` | Initial retry delay (seconds) |
-| Max Delay | `retry_max_delay` | `SECAPI_RETRY_MAX_DELAY` | `60` | Maximum retry delay (seconds) |
-| Backoff Factor | `retry_backoff_factor` | `SECAPI_RETRY_BACKOFF_FACTOR` | `2` | Exponential backoff multiplier |
-| Request Timeout | `request_timeout` | `SECAPI_REQUEST_TIMEOUT` | `30` | HTTP request timeout (seconds) |
-| Rate Limit Threshold | `rate_limit_threshold` | `SECAPI_RATE_LIMIT_THRESHOLD` | `0.1` | Throttle when <10% quota remains |
+| Option | Env Variable | Default | Description |
+|--------|--------------|---------|-------------|
+| `api_key` | `SECAPI_API_KEY` | _(required)_ | Your sec-api.io API key |
+| `base_url` | `SECAPI_BASE_URL` | `https://api.sec-api.io` | API base URL |
+| `retry_max_attempts` | `SECAPI_RETRY_MAX_ATTEMPTS` | `5` | Maximum retry attempts |
+| `retry_initial_delay` | `SECAPI_RETRY_INITIAL_DELAY` | `1.0` | Initial retry delay (seconds) |
+| `retry_max_delay` | `SECAPI_RETRY_MAX_DELAY` | `60` | Maximum retry delay (seconds) |
+| `request_timeout` | `SECAPI_REQUEST_TIMEOUT` | `30` | HTTP request timeout (seconds) |
+| `rate_limit_threshold` | `SECAPI_RATE_LIMIT_THRESHOLD` | `0.1` | Throttle when <10% quota remains |
+| `default_logging` | - | `false` | Enable automatic structured logging |
+| `metrics_backend` | - | `nil` | StatsD-compatible metrics backend |
 
 ## Requirements
 
@@ -288,8 +261,40 @@ All options can be set via YAML or environment variables:
   - `faraday-retry` - Automatic retry middleware
   - `anyway_config` - Configuration management
   - `dry-struct` - Immutable value objects
-  - `faye-websocket` - WebSocket client for streaming API
-  - `eventmachine` - Event-driven I/O (required by faye-websocket)
+  - `faye-websocket` - WebSocket client for streaming
+  - `eventmachine` - Event-driven I/O
+
+## Documentation
+
+### API Reference
+
+Generate YARD documentation:
+
+```bash
+bundle exec yard doc
+open doc/index.html
+```
+
+### Usage Examples
+
+See working examples in `docs/examples/`:
+
+| File | Description |
+|------|-------------|
+| [query_builder.rb](docs/examples/query_builder.rb) | Query by ticker, CIK, form type, date range |
+| [backfill_filings.rb](docs/examples/backfill_filings.rb) | Multi-year backfill with auto-pagination |
+| [streaming_notifications.rb](docs/examples/streaming_notifications.rb) | Real-time WebSocket notifications |
+| [instrumentation.rb](docs/examples/instrumentation.rb) | Logging, metrics, and observability |
+
+### Migration Guide
+
+Upgrading from v0.1.0? See the [Migration Guide](docs/migration-guide-v1.md) for breaking changes and upgrade instructions.
+
+### Architecture Documentation
+
+- [Product Requirements](_bmad-output/planning-artifacts/prd.md) - Complete requirements
+- [Architecture](_bmad-output/planning-artifacts/architecture.md) - Technical decisions
+- [Epics & Stories](_bmad-output/planning-artifacts/epics.md) - Implementation roadmap
 
 ## Development
 
@@ -304,74 +309,44 @@ bin/setup
 ### Testing
 
 ```bash
-# Run all tests
-bundle exec rspec
-
-# Run with coverage
-bundle exec rspec --format documentation
-
-# Linting
-bundle exec standardrb
+bundle exec rspec              # Run tests
+bundle exec standardrb         # Run linter
+bundle exec rake               # Run both
 ```
 
 ### Interactive Console
 
 ```bash
 bin/console
-
-# Inside console
-client = SecApi::Client.new
-client.query.ticker("AAPL").search
-```
-
-See [Development Guide](docs/development-guide.md) for detailed setup instructions.
-
-## Documentation
-
-- **[Project Overview](docs/project-overview.md)** - Executive summary and roadmap
-- **[Source Tree Analysis](docs/source-tree-analysis.md)** - Code organization guide
-- **[Development Guide](docs/development-guide.md)** - Setup and workflow
-- **[Product Requirements](docs/../_bmad-output/planning-artifacts/prd.md)** - Complete requirements
-- **[Architecture](docs/../_bmad-output/planning-artifacts/architecture.md)** - Technical decisions
-- **[Epics & Stories](docs/../_bmad-output/planning-artifacts/epics.md)** - Implementation roadmap
-
-### YARD Documentation (Coming in v1.0.0)
-
-```bash
-bundle exec yard doc
-open doc/index.html
 ```
 
 ## Roadmap
 
-### v0.1.0 (Current)
+### v0.1.0
 - ✅ Basic query, search, mapping, extractor endpoints
 - ✅ Configuration via anyway_config
 - ✅ Immutable value objects (Dry::Struct)
 
-### v1.0.0 (In Progress)
-- 🚧 Production-grade error handling and retry logic
-- 🚧 Fluent query builder DSL
-- 🚧 Automatic pagination
-- 🚧 XBRL extraction with validation
-- 🚧 Real-time streaming API (WebSocket)
-- 🚧 Intelligent rate limiting
-- 🚧 Observability hooks
-- 🚧 100% YARD documentation coverage
-- 🚧 Migration guide from v0.1.0
-
-See [Epics & Stories](docs/../_bmad-output/planning-artifacts/epics.md) for detailed implementation plan.
+### v1.0.0
+- ✅ Production-grade error handling with TransientError/PermanentError
+- ✅ Fluent query builder DSL
+- ✅ Automatic pagination with lazy enumeration
+- ✅ XBRL extraction with taxonomy detection
+- ✅ Real-time streaming API (WebSocket)
+- ✅ Intelligent rate limiting with proactive throttling
+- ✅ Observability hooks (instrumentation callbacks)
+- ✅ Structured logging and metrics integration
+- ✅ 100% YARD documentation coverage
+- ✅ Migration guide from v0.1.0
 
 ## Contributing
 
 Bug reports and pull requests are welcome on GitHub at https://github.com/ljuti/sec_api.
 
-### Development Workflow
-
 1. Fork the repository
 2. Create your feature branch (`git checkout -b feature/my-feature`)
 3. Write tests for your changes
-4. Ensure tests pass and linter is clean (`bundle exec rspec && bundle exec standardrb`)
+4. Ensure tests pass (`bundle exec rspec && bundle exec standardrb`)
 5. Commit your changes (`git commit -am 'Add new feature'`)
 6. Push to the branch (`git push origin feature/my-feature`)
 7. Create a Pull Request
@@ -392,6 +367,4 @@ This gem interacts with the [sec-api.io](https://sec-api.io) API. You'll need an
 
 ---
 
-**Status:** Active development - transitioning from v0.1.0 to v1.0.0
-
-For brownfield context and AI-assisted development, see the complete [documentation index](docs/index.md).
+**Status:** v1.0.0 released
