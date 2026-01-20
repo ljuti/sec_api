@@ -993,4 +993,73 @@ RSpec.describe SecApi::Query do
         .first # Trigger execution
     end
   end
+
+  describe "#fulltext" do
+    let(:fulltext_response) do
+      {
+        filings: [
+          {
+            cik: "320193",
+            ticker: "AAPL",
+            companyNameLong: "Apple Inc.",
+            formType: "8-K",
+            filingUrl: "https://sec.gov/aapl.htm",
+            type: "8-K",
+            description: "Filing mentions acquisition",
+            filedAt: "2024-01-15"
+          }
+        ]
+      }
+    end
+
+    it "sends POST request to /full-text-search endpoint" do
+      stubs.post("/full-text-search") do |env|
+        body = JSON.parse(env.body)
+        expect(body["query"]).to eq("merger acquisition")
+        [200, json_headers, fulltext_response.to_json]
+      end
+
+      client.query.fulltext("merger acquisition")
+    end
+
+    it "returns SecApi::Collections::FulltextResults" do
+      stubs.post("/full-text-search") do |_env|
+        [200, json_headers, fulltext_response.to_json]
+      end
+
+      result = client.query.fulltext("acquisition")
+      expect(result).to be_a(SecApi::Collections::FulltextResults)
+    end
+
+    it "supports additional options" do
+      stubs.post("/full-text-search") do |env|
+        body = JSON.parse(env.body)
+        expect(body["query"]).to eq("revenue growth")
+        expect(body["from"]).to eq("10")
+        expect(body["size"]).to eq("50")
+        [200, json_headers, fulltext_response.to_json]
+      end
+
+      client.query.fulltext("revenue growth", from: "10", size: "50")
+    end
+
+    it "wraps results in FulltextResult objects" do
+      stubs.post("/full-text-search") do |_env|
+        [200, json_headers, fulltext_response.to_json]
+      end
+
+      result = client.query.fulltext("acquisition")
+      expect(result.first).to be_a(SecApi::Objects::FulltextResult)
+    end
+
+    it "raises AuthenticationError on 401" do
+      stubs.post("/full-text-search") { [401, json_headers, {error: "Unauthorized"}.to_json] }
+      expect { client.query.fulltext("test") }.to raise_error(SecApi::AuthenticationError)
+    end
+
+    it "raises RateLimitError on 429" do
+      stubs.post("/full-text-search") { [429, json_headers, {error: "Rate limited"}.to_json] }
+      expect { client.query.fulltext("test") }.to raise_error(SecApi::RateLimitError)
+    end
+  end
 end
