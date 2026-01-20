@@ -31,7 +31,7 @@ module SecApi
     MINOR = 0
 
     # @return [Integer] Patch version number (bug fixes)
-    PATCH = 1
+    PATCH = 2
 
     # @return [String, nil] Pre-release identifier (e.g., "alpha", "beta", "rc1")
     PRE = nil
